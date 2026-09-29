@@ -109,6 +109,8 @@ python dashboard.py
 
 This builds `dashboard.html` from your run history (pass rates, tokens, latest runs, recent self-corrections) — open it in a browser, and re-run the script to refresh after new runs.
 
+For the full interactive experience, see `frontend/` — **PipelineForge**, a dark neural-command-center React app that plays a scripted run of this exact pipeline (upload → 7-stage canvas → inspector → code diffs → validation → agent log → fix-memory graph → export). `cd frontend && npm install && npm run dev`.
+
 Cut a release after merging a feature:
 
 ```

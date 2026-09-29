@@ -20,6 +20,10 @@ retrain_trigger.json
 logs/
 dashboard.html
 
+# frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
 # test / coverage / build artifacts
 .pytest_cache/
 .coverage
