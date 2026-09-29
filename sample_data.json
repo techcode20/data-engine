@@ -1,0 +1,5 @@
+[
+  {"customer_id": 1, "name": "John Smith", "contact": {"email": "john@example.com", "phone": "555-1234"}, "plan": "PRO", "revenue": "$49.99"},
+  {"customer_id": 2, "name": "jane doe", "contact": {"email": "JANE@EXAMPLE.COM", "phone": null}, "plan": "pro", "revenue": 49.99},
+  {"customer_id": 3, "name": "Bob Lee", "contact": {"email": "bob@example.com"}, "plan": "Free", "revenue": 0}
+]

@@ -1,0 +1,6 @@
+﻿customer_id,name,signup_date,email,plan,revenue
+1,John Smith,2023-01-15,john@example.com,PRO,$49.99
+2,jane doe,01/22/2023,JANE@EXAMPLE.COM,pro,49.99
+3,Bob Lee,,bob@example.com,Free,0
+4,,2023-03-01,alice@example.com,PRO,$49.99
+5,Sam Kim,2023/03/15,sam@example,basic,19.99

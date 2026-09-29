@@ -1,0 +1,24 @@
+# secrets — never commit API keys
+.env
+
+# virtualenv
+venv/
+
+# python bytecode
+__pycache__/
+*.py[cod]
+
+# pipeline outputs & per-machine local state (regenerable)
+cleaned_*.csv
+real_data.csv
+last_run_failures.txt
+schema_cache.json
+fix_log.jsonl
+run_summary.json
+retrain_trigger.json
+
+# test / coverage / build artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+data_engine.egg-info/

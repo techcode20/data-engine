@@ -1,0 +1,4 @@
+file: sample_data_2.csv
+rules: "order_id is required and unique. customer_email must be a valid email. status must be one of PENDING, SHIPPED, CANCELLED. amount_usd must be numeric and non-negative."
+retries: 5
+output: cleaned_orders.csv

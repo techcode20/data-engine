@@ -1,0 +1,6 @@
+file: sample_data.csv
+rules: "customer_id is required and unique. name is required. plan must be one of FREE, BASIC, PRO. revenue must be numeric."
+retries: 5
+tag: production
+schedule: daily
+output: cleaned_output.csv

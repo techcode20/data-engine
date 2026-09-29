@@ -1,0 +1,18 @@
+## Milestones 1–5 — Core pipeline
+Ingest → infer schema → generate code → sandbox execute → validate, with a self-correct retry loop and automated pandera schema generation with business-rule checks.
+
+## Milestones 6–10 — Memory, generalization, robustness
+Fix-log history fed into future prompts. Generalized to a second dataset. Migrated from deprecated `google-generativeai` to `google-genai`.
+
+## Milestones 11–17 — CLI and reliability
+YAML config support, batch mode, concurrency (`ThreadPoolExecutor`), retry-with-backoff on API errors, persistent `run_summary.json`, pytest suite, trend reporting.
+
+## Milestones 18–20 — Documentation and reflection
+README added. Automated test running via `run_tests.bat` / pre-commit hook.
+
+## Milestones 21–30 — API ingestion
+Direct URL ingestion, Link-header and page-param pagination (later auto-detected), Bearer-token auth, a real end-to-end run against OpenWeatherMap, coverage reporting via `pytest-cov`, targeted tests for `ingest.py` (which had two real bugs — a dropped `return df`, and lost branches after an edit), and `.env` substitution in `--file` URLs.
+
+## Known bugs fixed along the way
+- `ingest.py` briefly returned `None` after an incomplete edit dropped its `return df` and the CSV/local-JSON branches — caught and fixed, then covered by tests in Milestone 28
+- A test assertion in `test_engine.py` had an off-by-one in expected retry count — fixed

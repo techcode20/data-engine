@@ -1,0 +1,19 @@
+import json
+from datetime import datetime
+
+SUMMARY_PATH = "run_summary.json"
+
+def write_summary(results: list[dict]):
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "results": results,
+    }
+    history = []
+    try:
+        with open(SUMMARY_PATH, "r") as f:
+            history = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        history = []
+    history.append(entry)
+    with open(SUMMARY_PATH, "w") as f:
+        json.dump(history, f, indent=2)
