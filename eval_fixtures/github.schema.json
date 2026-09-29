@@ -1,0 +1,7 @@
+{
+  "login": {"type": "str", "nullable": false},
+  "id": {"type": "int", "nullable": false, "unique": true, "min_value": 1},
+  "node_id": {"type": "str", "nullable": false},
+  "site_admin": {"type": "bool", "nullable": false},
+  "type": {"type": "str", "nullable": false, "allowed_values": ["User", "Bot"]}
+}

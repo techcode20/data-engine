@@ -32,3 +32,31 @@ def test_process_one_gives_up_after_max_retries(mock_schema_gen, mock_code_gen, 
     assert result["success"] is False
     assert result["attempts"] == 2
     assert mock_code_gen.call_count == 3  # 1 initial generation + 1 fix per failed attempt (2 attempts)
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_strict_stops_after_first_failure(mock_schema_gen, mock_code_gen, tmp_path):
+    csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n")
+    mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
+    mock_code_gen.return_value = "def clean(df):\n    return df"
+
+    result = process_one(csv_path, "id must be an integer", retries=5, output_path=None, strict=True)
+
+    assert result["success"] is False
+    assert result["attempts"] == 1
+    assert mock_code_gen.call_count == 1  # initial generation only — no fix calls in strict mode
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_retries_on_sanity_failure(mock_schema_gen, mock_code_gen, tmp_path):
+    # Schema passes (id becomes int) but the cleaner drops 4/5 rows -> sanity
+    # failure must feed the retry loop like a validation failure.
+    csv_path = _write_temp_csv(tmp_path, "id\n1\n2\n3\n4\n5\n")
+    mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
+    mock_code_gen.return_value = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df.iloc[:1]"
+
+    result = process_one(csv_path, "id must be an integer", retries=2, output_path=None)
+
+    assert result["success"] is False
+    assert result["attempts"] == 2
+    assert mock_code_gen.call_count == 3

@@ -14,7 +14,7 @@ from run_summary import write_summary
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
 from schema_inference import infer_schema
-from validate import validate
+from validate import validate, sanity_checks
 from importlib.metadata import version as _pkg_version
 from schema_cache import get_cached_schema, set_cached_schema
 from dotenv import load_dotenv
@@ -41,7 +41,7 @@ def _content_fingerprint(source: str, df) -> str | None:
 
 
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
-                no_cache=False, sample_rows=15):
+                no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75):
     df = ingest(file_path, pagination=pagination)
     fingerprint = _content_fingerprint(file_path, df)
     schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
@@ -71,16 +71,27 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         if exec_error:
             print("Execution failed. Asking model to fix it...")
             log_fix(file_path, attempt, exec_error, code)
+            if strict:
+                print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
+                break
             code = fix_transform_code(code, exec_error, schema_json)
             continue
 
         ok, failures = validate(cleaned_df, pandera_schema)
+        if ok:
+            sanity_issues = sanity_checks(df, cleaned_df, max_drop_fraction=max_drop_fraction)
+            if sanity_issues:
+                ok = False
+                failures = "\n".join(f"SANITY: {s}" for s in sanity_issues)
         if ok:
             print(f"✅ {file_path}: VALIDATION PASSED (attempt {attempt})")
             success = True
         else:
             print("Validation failed. Asking model to fix it...")
             log_fix(file_path, attempt, str(failures), code)
+            if strict:
+                print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
+                break
             code = fix_transform_code(code, str(failures), schema_json)
 
     if success and output_path:
@@ -132,6 +143,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Infer schema and generate code, but skip execution/validation")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-attempt progress output")
     parser.add_argument("--no-cache", action="store_true", help="Bypass the schema cache (re-infer every run)")
+    parser.add_argument("--strict", action="store_true", help="Fail fast on first error: no self-correct retries")
+    parser.add_argument("--max-drop", type=float, default=0.75, help="Fail validation if cleaning drops more than this fraction of rows (default: 0.75)")
     parser.add_argument("--sample-rows", type=int, default=15, help="Rows sampled for schema inference: head + deterministic random slice (default: 15)")
     args = parser.parse_args()
     if args.file:
@@ -190,6 +203,8 @@ def main():
                     pagination=cfg.get("pagination", args.pagination),
                     no_cache=cfg.get("no_cache", args.no_cache),
                     sample_rows=cfg.get("sample_rows", args.sample_rows),
+                    strict=cfg.get("strict", args.strict),
+                    max_drop_fraction=cfg.get("max_drop", args.max_drop),
                 ): cfg["file"]
                 for cfg in configs_to_run
             }
@@ -199,7 +214,7 @@ def main():
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
 
-        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows)
+        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop)
         results.append(result)
 
     print("\n=== SUMMARY ===")

@@ -1,0 +1,7 @@
+{
+  "city": {"type": "str", "nullable": false},
+  "temp": {"type": "float", "nullable": false},
+  "humidity": {"type": "float", "nullable": false, "min_value": 0},
+  "wind_speed": {"type": "float", "nullable": false, "min_value": 0},
+  "observed": {"type": "datetime", "nullable": false}
+}

@@ -1,0 +1,13 @@
+{
+  "id": {"type": "int", "nullable": false, "unique": true, "min_value": 1},
+  "name": {"type": "str", "nullable": false},
+  "status": {"type": "str", "nullable": false, "allowed_values": ["Alive", "Dead", "unknown"]},
+  "species": {"type": "str", "nullable": false},
+  "gender": {"type": "str", "nullable": false},
+  "origin.name": {"type": "str", "nullable": false},
+  "location.name": {"type": "str", "nullable": false},
+  "image": {"type": "str", "nullable": false},
+  "episode_count": {"type": "int", "nullable": false, "min_value": 0},
+  "url": {"type": "str", "nullable": false, "unique": true},
+  "created": {"type": "datetime", "nullable": false}
+}

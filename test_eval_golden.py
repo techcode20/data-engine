@@ -22,21 +22,30 @@ from pandas.testing import assert_frame_equal
 from ingest import ingest
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema, clean_json_text
-from validate import validate
+from validate import validate, sanity_checks
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "eval_fixtures")
 
 
 def _fixture_names():
-    return sorted(
-        os.path.splitext(os.path.basename(p))[0].removesuffix(".dirty")
-        for p in glob.glob(os.path.join(FIXTURES_DIR, "*.dirty.csv"))
-    )
+    names = set()
+    for ext in ("*.dirty.csv", "*.dirty.json"):
+        for p in glob.glob(os.path.join(FIXTURES_DIR, ext)):
+            names.add(os.path.basename(p).split(".dirty.")[0])
+    return sorted(names)
+
+
+def _dirty_path(name):
+    for ext in (".csv", ".json"):
+        p = os.path.join(FIXTURES_DIR, f"{name}.dirty{ext}")
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"No dirty fixture for {name}")
 
 
 @pytest.mark.parametrize("name", _fixture_names())
 def test_golden_fixture(name):
-    dirty_path = os.path.join(FIXTURES_DIR, f"{name}.dirty.csv")
+    dirty_path = _dirty_path(name)
     expected_path = os.path.join(FIXTURES_DIR, f"{name}.clean.csv")
     code_path = os.path.join(FIXTURES_DIR, f"{name}.clean.py")
     schema_path = os.path.join(FIXTURES_DIR, f"{name}.schema.json")
@@ -54,6 +63,11 @@ def test_golden_fixture(name):
 
     ok, failures = validate(cleaned, schema)
     assert ok, f"schema validation failed on {name}:\n{failures}"
+
+    # Same guards engine.py applies post-validation: fixtures must satisfy
+    # them, otherwise the reference solution wouldn't survive a real run.
+    issues = sanity_checks(df, cleaned)
+    assert issues == [], f"sanity checks failed on {name}: {issues}"
 
     datetime_cols = [c for c, spec in schema_dict.items() if spec.get("type") == "datetime"]
     expected = pd.read_csv(expected_path, parse_dates=datetime_cols)

@@ -51,11 +51,13 @@ Use `{ENV_VAR}` placeholders anywhere a file/URL or rules string appears — the
 file: "https://api.example.com/data?token={DATA_API_KEY}"
 ```
 
-Inspect without executing, or quiet the logs:
+Inspect without executing, quiet the logs, fail fast, or bypass the cache:
 
 ```
 python engine.py --config configs/customers.yaml --dry-run
 python engine.py --config-dir configs --quiet
+python engine.py --file mydata.csv --rules "..." --strict
+python engine.py --file mydata.csv --rules "..." --no-cache --max-drop 0.5
 ```
 
 View historical pass rates and average retry counts per dataset:
@@ -78,7 +80,7 @@ run_tests.bat
 4. **schema_cache.py** — caches inferred schemas per dataset+rules+content hash (URLs hash by address; `--no-cache` bypasses)
 5. **code_gen.py** — asks the model to write a `clean(df)` function matching the schema (with exact-dtype casting rules); also holds `fix_transform_code()`, used when something fails
 6. **sandbox.py** — executes generated code safely, capturing errors without touching the original DataFrame
-7. **validate.py** — runs the cleaned result through the pandera schema
+7. **validate.py** — runs the cleaned result through the pandera schema, then applies dataset-level sanity checks (no empty output, row-drop fraction within `--max-drop`, no newly all-null columns). Sanity failures retry like validation failures — or stop immediately under `--strict`
 8. **engine.py** — orchestrates all of the above in a self-correct loop (capped retries), handles CLI args, config files, env-var substitution, and batch/parallel execution
 9. **fix_memory.py** — logs every error + fix to `fix_log.jsonl`, and feeds recent fixes back into future code generation as prior experience (capped per error signature so prompts stay lean)
 10. **run_summary.py** / **trends.py** — record and report on run history over time
@@ -94,6 +96,10 @@ output: cleaned.csv               # optional
 tag: production                   # optional, filter with --tag
 schedule: daily                   # optional, filter with --cadence
 pagination: auto                  # optional: link | page_param | auto (API sources only)
+strict: false                     # optional, fail fast with no retries (like --strict)
+max_drop: 0.75                    # optional, max row-drop fraction (like --max-drop)
+no_cache: false                   # optional, re-infer schema every run
+sample_rows: 15                   # optional, rows sampled for inference
 ```
 
 ## Secrets
@@ -104,7 +110,7 @@ pagination: auto                  # optional: link | page_param | auto (API sour
 
 ## Evaluation
 
-Beyond the unit suite, `test_eval_golden.py` checks end-to-end cleaning quality against golden fixtures in `eval_fixtures/`: known-dirty input → expected clean output, run through fixed `clean()` functions plus schema validation. Add a fixture pair whenever you onboard a new dataset shape.
+Beyond the unit suite, `test_eval_golden.py` checks end-to-end cleaning quality against golden fixtures in `eval_fixtures/`: known-dirty input → expected clean output, run through fixed `clean()` functions plus schema validation **and** sanity checks. Five shapes covered: `customers`, `orders`, `github` (API bools/ids), `rickmorty` (nested JSON flattening), `openweather` (single-object API payloads). Add a fixture quadruple whenever you onboard a new dataset shape.
 
 ## Known limitations
 

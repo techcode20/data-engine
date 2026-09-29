@@ -1,0 +1,5 @@
+[
+  {"city": "Chennai", "main": {"temp": 30.5, "humidity": 70}, "wind": {"speed": 3.2}, "dt": 1727450000},
+  {"city": "Oslo", "main": {"temp": "cold", "humidity": 80}, "wind": {"speed": 5.1}, "dt": 1727450000},
+  {"city": "", "main": {"temp": 12.0, "humidity": 60}, "wind": {"speed": 2.0}, "dt": 1727450000}
+]
