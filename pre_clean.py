@@ -8,8 +8,70 @@ explicit removal of wholly-empty rows:
 - strip leading/trailing whitespace on string columns (counts cells changed)
 - map empty / whitespace-only strings to NaN (uniform missing-value signal)
 - drop rows that are entirely NaN (nothing to clean there)
+
+Opt-in second stage, smart_parse(): best-effort currency/datetime parsing.
+A column converts ONLY if every non-null value parses — otherwise it is left
+byte-identical. Never touches non-string dtypes or non-string objects.
 """
 import pandas as pd
+
+CURRENCY_RE = r"-?\$?[\d,]*\.?\d+"
+
+
+def try_parse_currency(series: pd.Series) -> tuple[pd.Series, bool]:
+    """'$1,234.56' / '49.99' -> float64 (Int64 when all integral). All-or-nothing."""
+    non_null = series.dropna()
+    if non_null.empty:
+        return series, False
+    text = non_null.astype(str)
+    if not text.str.fullmatch(CURRENCY_RE).all():
+        return series, False
+    try:
+        nums = pd.to_numeric(
+            text.str.replace("$", "", regex=False).str.replace(",", "", regex=False),
+            errors="raise",
+        )
+    except (ValueError, TypeError):
+        return series, False
+    # Fresh Series: pandas 3 StringDtype forbids in-place numeric writes.
+    # (float64 can't hold pd.NA at construction — use NaN there.)
+    target = "Int64" if (nums % 1 == 0).all() else "float64"
+    fill = pd.NA if target == "Int64" else float("nan")
+    out = pd.Series(fill, index=series.index, dtype=target)
+    out.loc[non_null.index] = nums.values
+    return out, True
+
+
+def try_parse_datetime(series: pd.Series) -> tuple[pd.Series, bool]:
+    """Common date spellings -> datetime64[ns]. All-or-nothing, tz stripped."""
+    non_null = series.dropna()
+    if non_null.empty or pd.api.types.is_datetime64_any_dtype(series):
+        return series, False
+    parsed = pd.to_datetime(non_null.astype(str), format="mixed", errors="coerce")
+    if parsed.isna().any():
+        return series, False
+    if getattr(parsed.dt, "tz", None) is not None:
+        parsed = parsed.dt.tz_localize(None)
+    out = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    out.loc[non_null.index] = parsed.values
+    return out, True
+
+
+def smart_parse(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Apply try_parse_currency then try_parse_datetime per string column."""
+    df = df.copy()
+    report: dict = {"currency_parsed": [], "dates_parsed": []}
+    for col in df.select_dtypes(include=["object", "string"]).columns:
+        converted, ok = try_parse_currency(df[col])
+        if ok:
+            df[col] = converted
+            report["currency_parsed"].append(col)
+            continue
+        converted, ok = try_parse_datetime(df[col])
+        if ok:
+            df[col] = converted
+            report["dates_parsed"].append(col)
+    return df, report
 
 
 def pre_clean(df: pd.DataFrame, drop_empty_rows: bool = True) -> tuple[pd.DataFrame, dict]:

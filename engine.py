@@ -12,7 +12,7 @@ from code_cache import get_cached_code, set_cached_code
 from fix_memory import log_fix
 from gemini_client import estimate_cost, reset_usage, usage_totals
 from ingest import ingest
-from pre_clean import format_report, pre_clean
+from pre_clean import format_report, pre_clean, smart_parse
 from run_summary import write_summary
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
@@ -22,6 +22,12 @@ from importlib.metadata import version as _pkg_version
 from schema_cache import get_cached_schema, set_cached_schema
 from dotenv import load_dotenv
 load_dotenv()
+
+try:
+    # Same rationale as trends.py: emoji status lines must not crash cp1252 consoles.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def substitute_env_vars(text: str) -> str:
@@ -45,13 +51,19 @@ def _content_fingerprint(source: str, df) -> str | None:
 
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
-                no_pre_clean=False, max_cost_usd=None):
+                no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False):
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     df = ingest(file_path, pagination=pagination)
     if not no_pre_clean:
         df, pre_report = pre_clean(df)
         if not quiet:
             print(f"🧹 pre-clean: {format_report(pre_report)}")
+    if smart_parse_cols:
+        df, parse_report = smart_parse(df)
+        if not quiet:
+            parsed = (parse_report["currency_parsed"] + parse_report["dates_parsed"]
+                      or ["nothing confidently parseable"])
+            print(f"🔍 smart-parse: {', '.join(parsed)}")
     fingerprint = _content_fingerprint(file_path, df)
     schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
     if schema_json is None:
@@ -205,6 +217,7 @@ def main():
     parser.add_argument("--no-cache", action="store_true", help="Bypass the schema cache (re-infer every run)")
     parser.add_argument("--strict", action="store_true", help="Fail fast on first error: no self-correct retries")
     parser.add_argument("--no-pre-clean", action="store_true", help="Skip the deterministic pre-clean pass")
+    parser.add_argument("--smart-parse", action="store_true", help="Best-effort currency/datetime parsing before inference (all-or-nothing per column)")
     parser.add_argument("--max-cost-usd", type=float, default=None, help="Stop retrying a dataset once estimated LLM spend reaches this USD cap (needs GEMINI_PRICE_* rates)")
     parser.add_argument("--max-drop", type=float, default=0.75, help="Fail validation if cleaning drops more than this fraction of rows (default: 0.75)")
     parser.add_argument("--sample-rows", type=int, default=15, help="Rows sampled for schema inference: head + deterministic random slice (default: 15)")
@@ -272,6 +285,7 @@ def main():
                     max_drop_fraction=cfg.get("max_drop", args.max_drop),
                     no_pre_clean=cfg.get("no_pre_clean", args.no_pre_clean),
                     max_cost_usd=cfg.get("max_cost", args.max_cost_usd),
+                    smart_parse_cols=cfg.get("smart_parse", args.smart_parse),
                 ): cfg["file"]
                 for cfg in configs_to_run
             }
@@ -281,7 +295,7 @@ def main():
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
 
-        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop, no_pre_clean=args.no_pre_clean, max_cost_usd=args.max_cost_usd)
+        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop, no_pre_clean=args.no_pre_clean, max_cost_usd=args.max_cost_usd, smart_parse_cols=args.smart_parse)
         results.append(result)
 
     print("\n=== SUMMARY ===")

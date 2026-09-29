@@ -116,3 +116,20 @@ def test_process_one_budget_guard_stops_retries(mock_schema_gen, mock_code_gen, 
     assert result["attempts"] == 1
     assert result["budget_stopped"] is True
     assert mock_code_gen.call_count == 1  # initial generation only — no paid fix calls
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_smart_parse_reduces_llm_work(mock_schema_gen, mock_code_gen, tmp_path):
+    csv_path = _write_temp_csv(tmp_path, "id,revenue\n1, $49.99 \n2,$10\n")
+    schema = '{"id": {"type": "int", "nullable": false}, "revenue": {"type": "float", "nullable": false}}'
+    rules = "smart parse demo rules"
+    mock_schema_gen.return_value = schema
+    # Trivial code: only casts id. Passes iff smart-parse already made revenue numeric.
+    mock_code_gen.return_value = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df"
+
+    good = process_one(csv_path, rules, retries=1, output_path=None, smart_parse_cols=True)
+    assert good["success"] is True
+    assert good["attempts"] == 1
+
+    bad = process_one(csv_path, rules, retries=1, output_path=None, smart_parse_cols=False)
+    assert bad["success"] is False
