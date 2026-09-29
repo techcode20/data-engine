@@ -17,7 +17,7 @@ Here are fixes from past runs on other datasets — avoid repeating these same m
 {past_fixes}
 
 Requirements:
-- Handle mixed date formats using pd.to_datetime with errors='coerce'
+- Handle mixed date formats using pd.to_datetime with format="mixed" and errors='coerce' (pandas 3 infers one format per Series — without format="mixed", valid dates in other formats silently become NaT)
 - Strip currency symbols and convert to float
 - Normalize string casing where relevant (e.g. uppercase plan names)
 - Drop or flag rows missing required fields — do not crash on bad data

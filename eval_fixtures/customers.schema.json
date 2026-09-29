@@ -1,0 +1,8 @@
+{
+  "customer_id": {"type": "int", "nullable": false, "unique": true},
+  "name": {"type": "str", "nullable": false},
+  "signup_date": {"type": "datetime", "nullable": false},
+  "email": {"type": "str", "nullable": false, "format_hint": "email"},
+  "plan": {"type": "str", "nullable": false, "allowed_values": ["FREE", "BASIC", "PRO"]},
+  "revenue": {"type": "float", "nullable": false, "min_value": 0}
+}

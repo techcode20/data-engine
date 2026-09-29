@@ -1,0 +1,6 @@
+user_id,full_name,joined,contact,tier,mrr
+101,Carlos Ruiz,15-Jan-2023,carlos@test.io,ENTERPRISE, 99.00
+102,,2023-02-30,priya@test.io,starter,15
+103,Wei Chen,Jan 2023,wei@test,ENTERPRISE,99.00
+104,Ana Gomez,2023-04-01,ana@gomez.io,GOLD,40
+105,Li Na,2023-05-01,li@na.io,STARTER,$25

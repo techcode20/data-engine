@@ -1,0 +1,4 @@
+customer_id,name,signup_date,email,plan,revenue
+1,John Smith,2023-01-15,john@example.com,PRO,49.99
+2,jane doe,2023-01-22,jane@example.com,PRO,49.99
+6,Tom Ray,2023-06-01,tom@example.com,BASIC,12.5

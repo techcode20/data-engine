@@ -33,19 +33,22 @@ def _load_cache():
         return {}
 
 
-def _cache_key(file_path, rules):
-    return f"{file_path}:{rules}:{_file_hash(file_path)}"
+def _cache_key(file_path, rules, content_fingerprint=None):
+    # A caller-supplied fingerprint (e.g. hash of fetched API content) takes
+    # precedence: URL addresses alone go stale when the remote data changes.
+    content_hash = content_fingerprint or _file_hash(file_path)
+    return f"{file_path}:{rules}:{content_hash}"
 
-def get_cached_schema(file_path, rules):
+def get_cached_schema(file_path, rules, content_fingerprint=None):
     cache = _load_cache()
     if not cache:
         return None
-    key = _cache_key(file_path, rules)
+    key = _cache_key(file_path, rules, content_fingerprint)
     return cache.get(key)
 
-def set_cached_schema(file_path, rules, schema_json):
+def set_cached_schema(file_path, rules, schema_json, content_fingerprint=None):
     cache = _load_cache()
-    key = _cache_key(file_path, rules)
+    key = _cache_key(file_path, rules, content_fingerprint)
     cache[key] = schema_json
     with open(CACHE_PATH, "w") as f:
         json.dump(cache, f, indent=2)

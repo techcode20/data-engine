@@ -1,6 +1,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
+import hashlib
 import os
 import re
 import sys
@@ -26,12 +27,28 @@ def substitute_env_vars(text: str) -> str:
     return re.sub(r"\{([A-Z_][A-Z0-9_]*)\}", replace, text)
 
 
-def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link"):
+def _content_fingerprint(source: str, df) -> str | None:
+    # Local files are already fingerprinted by content hash inside
+    # schema_cache; for URLs the address alone goes stale when remote data
+    # changes, so hash a slice of the fetched content instead.
+    if isinstance(source, str) and source.lower().startswith(("http://", "https://")):
+        try:
+            blob = df.head(50).to_csv(index=False).encode("utf-8", errors="replace")
+            return hashlib.md5(blob).hexdigest()
+        except Exception:
+            return None
+    return None
+
+
+def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
+                no_cache=False, sample_rows=15):
     df = ingest(file_path, pagination=pagination)
-    schema_json = get_cached_schema(file_path, rules)
+    fingerprint = _content_fingerprint(file_path, df)
+    schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
     if schema_json is None:
-        schema_json = infer_schema(df, rules)
-    set_cached_schema(file_path, rules, schema_json)
+        schema_json = infer_schema(df, rules, sample_rows=sample_rows)
+    if not no_cache:
+        set_cached_schema(file_path, rules, schema_json, fingerprint)
     pandera_schema = build_pandera_schema(schema_json)
     code = generate_transform_code(schema_json, rules)
     if dry_run:
@@ -86,7 +103,7 @@ def load_config(config_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Self-synthesizing data engine")
-    parser.add_argument("--pagination", default="link", choices=["link", "page_param"], help="Pagination style for API sources (default: link)")
+    parser.add_argument("--pagination", default="link", choices=["link", "page_param", "auto"], help="Pagination style for API sources (default: link)")
     parser.add_argument("--file", help="Path to input CSV or JSON")
     parser.add_argument("--rules", help="Business rules as a plain-English sentence")
     parser.add_argument("--retries", type=int, default=5, help="Max self-correct attempts (default: 5)")
@@ -114,6 +131,8 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true", help="Infer schema and generate code, but skip execution/validation")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-attempt progress output")
+    parser.add_argument("--no-cache", action="store_true", help="Bypass the schema cache (re-infer every run)")
+    parser.add_argument("--sample-rows", type=int, default=15, help="Rows sampled for schema inference: head + deterministic random slice (default: 15)")
     args = parser.parse_args()
     if args.file:
         args.file = substitute_env_vars(args.file)
@@ -169,6 +188,8 @@ def main():
                     dry_run=args.dry_run,
                     quiet=args.quiet,
                     pagination=cfg.get("pagination", args.pagination),
+                    no_cache=cfg.get("no_cache", args.no_cache),
+                    sample_rows=cfg.get("sample_rows", args.sample_rows),
                 ): cfg["file"]
                 for cfg in configs_to_run
             }
@@ -178,7 +199,7 @@ def main():
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
 
-        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination)
+        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows)
         results.append(result)
 
     print("\n=== SUMMARY ===")

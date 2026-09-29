@@ -13,6 +13,9 @@ README added. Automated test running via `run_tests.bat` / pre-commit hook.
 ## Milestones 21–30 — API ingestion
 Direct URL ingestion, Link-header and page-param pagination (later auto-detected), Bearer-token auth, a real end-to-end run against OpenWeatherMap, coverage reporting via `pytest-cov`, targeted tests for `ingest.py` (which had two real bugs — a dropped `return df`, and lost branches after an edit), and `.env` substitution in `--file` URLs.
 
+## Milestones 31+ — Safety, secrets, eval, robustness
+Git repo + `.gitignore` (env, outputs, caches, logs stay local) + a pre-commit hook that refuses `.env` and likely API keys. Scrubbed a leaked OpenWeather key from run history (rotate it in the provider console). README rewritten to match reality (API ingestion, native types, `python -m pytest`). Fix memory now capped per error signature with 90-day expiry and truncated prompt blocks. Golden-file eval (`eval_fixtures/` + `test_eval_golden.py`) checks end-to-end cleaning quality offline. Adaptive schema sampling (`--sample-rows`: head + seeded random slice), `--no-cache`, and content-fingerprinted URL cache keys. Notable catch from the eval: pandas 3 infers one datetime format per Series, so mixed-format dates need `format="mixed"` — the code-gen prompt now says so.
+
 ## Known bugs fixed along the way
 - `ingest.py` briefly returned `None` after an incomplete edit dropped its `return df` and the CSV/local-JSON branches — caught and fixed, then covered by tests in Milestone 28
 - A test assertion in `test_engine.py` had an off-by-one in expected retry count — fixed

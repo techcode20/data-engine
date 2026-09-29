@@ -1,0 +1,8 @@
+{
+  "user_id": {"type": "int", "nullable": false, "unique": true},
+  "full_name": {"type": "str", "nullable": false},
+  "joined": {"type": "datetime", "nullable": false},
+  "contact": {"type": "str", "nullable": false, "format_hint": "email"},
+  "tier": {"type": "str", "nullable": false, "allowed_values": ["STARTER", "ENTERPRISE"]},
+  "mrr": {"type": "float", "nullable": false, "min_value": 0}
+}
