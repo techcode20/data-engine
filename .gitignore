@@ -16,6 +16,7 @@ schema_cache.json
 fix_log.jsonl
 run_summary.json
 retrain_trigger.json
+logs/
 
 # test / coverage / build artifacts
 .pytest_cache/

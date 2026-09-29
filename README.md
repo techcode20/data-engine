@@ -13,7 +13,7 @@ venv\Scripts\activate.bat
 2. Install dependencies:
 
 ```
-pip install pandas pandera google-genai python-dotenv pyyaml requests pytest pytest-cov
+pip install -r requirements.txt
 ```
 
 3. Add your keys to `.env` (never committed — see Secrets below):
@@ -70,6 +70,14 @@ Run the test suite (via `python -m pytest`, not bare `pytest` — the `pytest.ex
 
 ```
 run_tests.bat
+```
+
+Schedule the daily batch on Windows with Task Scheduler pointing at `run_daily.bat` (runs `--cadence daily` configs, appends to `logs\daily_run.log`, pops an alert on failure).
+
+Cut a release after merging a feature:
+
+```
+python bump_version.py "Short note for the changelog"
 ```
 
 ## How it works

@@ -1,6 +1,6 @@
 [project]
 name = "data-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
     "pandas", "pandera", "google-genai", "python-dotenv",
     "pyyaml", "requests", "pytest", "pytest-cov",
@@ -8,6 +8,15 @@ dependencies = [
 
 [project.scripts]
 data-engine = "engine:main"
+
+# Explicit module list: this repo is a flat script collection, so setuptools
+# auto-discovery must stay OFF (it chokes on configs/ and eval_fixtures/).
+[tool.setuptools]
+py-modules = [
+    "engine", "ingest", "schema_inference", "schema_builder", "schema_cache",
+    "code_gen", "sandbox", "validate", "fix_memory", "run_summary", "trends",
+    "gemini_client",
+]
 
 [build-system]
 requires = ["setuptools"]

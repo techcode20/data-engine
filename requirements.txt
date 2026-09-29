@@ -1,0 +1,10 @@
+# Direct dependencies (mirrors pyproject.toml). Install with:
+#   pip install -r requirements.txt
+pandas
+pandera
+google-genai
+python-dotenv
+pyyaml
+requests
+pytest
+pytest-cov
