@@ -25,3 +25,6 @@ Git repo + `.gitignore` (env, outputs, caches, logs stay local) + a pre-commit h
 
 ## 0.2.0 - 2026-09-29
 Packaging, dead-code removal, and scheduled-run hardening
+
+## 0.2.1 — 2026-09-29
+LLM metering, clean-code reuse cache, model verification

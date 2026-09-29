@@ -60,3 +60,39 @@ def test_process_one_retries_on_sanity_failure(mock_schema_gen, mock_code_gen, t
     assert result["success"] is False
     assert result["attempts"] == 2
     assert mock_code_gen.call_count == 3
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_reuses_cached_code_with_zero_llm_calls(mock_schema_gen, mock_code_gen, tmp_path):
+    import code_cache
+    csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n2,Bob\n")
+    schema = '{"id": {"type": "int", "nullable": false, "unique": true}, "name": {"type": "str", "nullable": false}}'
+    rules = "id is required and unique"
+    mock_schema_gen.return_value = schema
+    cached = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df"
+    with patch.object(code_cache, "CODE_CACHE_PATH", str(tmp_path / "code_cache.json")):
+        code_cache.set_cached_code(schema, rules, cached)
+        result = process_one(csv_path, rules, retries=3, output_path=None)
+
+    assert result["success"] is True
+    assert result["attempts"] == 1
+    assert mock_code_gen.call_count == 0  # code came from cache — zero codegen calls
+    assert result["usage"]["calls"] == 0
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_falls_back_to_fresh_generation_on_stale_cache(mock_schema_gen, mock_code_gen, tmp_path):
+    import code_cache
+    csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n")
+    schema = '{"id": {"type": "int", "nullable": false}}'
+    rules = "id must be an integer"
+    mock_schema_gen.return_value = schema
+    mock_code_gen.return_value = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df"
+    stale = "def clean(df):\n    return df"  # id stays string -> fails validation
+    with patch.object(code_cache, "CODE_CACHE_PATH", str(tmp_path / "code_cache.json")):
+        code_cache.set_cached_code(schema, rules, stale)
+        result = process_one(csv_path, rules, retries=2, output_path=None)
+
+    assert result["success"] is True
+    assert result["attempts"] == 2
+    assert mock_code_gen.call_count == 1  # one fresh generation, no fix calls for stale cache

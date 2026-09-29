@@ -22,7 +22,7 @@ def get_sample(df: pd.DataFrame, n: int = DEFAULT_SAMPLE_ROWS, seed: int = 42) -
     return pd.concat([head, rest]).sort_index()
 
 
-def infer_schema(df: pd.DataFrame, business_rules: str, sample_rows: int = DEFAULT_SAMPLE_ROWS) -> str:
+def infer_schema(df: pd.DataFrame, business_rules: str, sample_rows: int = DEFAULT_SAMPLE_ROWS, tag: str = "") -> str:
     sample = get_sample(df, sample_rows).to_csv(index=False)
     prompt = f"""You are a senior data engineer. Given this sample of raw CSV data:
 
@@ -41,7 +41,7 @@ Propose a target schema as a JSON object, one key per column. For each column gi
 - "notes": any cleaning needed
 
 Return ONLY the raw JSON object. No markdown fences, no explanation, no trailing commas."""
-    return generate(prompt)
+    return generate(prompt, purpose="infer_schema", tag=tag)
 if __name__ == "__main__":
     from ingest import ingest
     df = ingest("sample_data.csv")

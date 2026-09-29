@@ -13,6 +13,7 @@ cleaned_*.csv
 real_data.csv
 last_run_failures.txt
 schema_cache.json
+code_cache.json
 fix_log.jsonl
 run_summary.json
 retrain_trigger.json

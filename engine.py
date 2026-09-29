@@ -8,7 +8,9 @@ import sys
 import yaml
 
 from code_gen import fix_transform_code, generate_transform_code
+from code_cache import get_cached_code, set_cached_code
 from fix_memory import log_fix
+from gemini_client import estimate_cost, reset_usage, usage_totals
 from ingest import ingest
 from run_summary import write_summary
 from sandbox import run_generated_code
@@ -42,21 +44,29 @@ def _content_fingerprint(source: str, df) -> str | None:
 
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75):
+    reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     df = ingest(file_path, pagination=pagination)
     fingerprint = _content_fingerprint(file_path, df)
     schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
     if schema_json is None:
-        schema_json = infer_schema(df, rules, sample_rows=sample_rows)
+        schema_json = infer_schema(df, rules, sample_rows=sample_rows, tag=file_path)
     if not no_cache:
         set_cached_schema(file_path, rules, schema_json, fingerprint)
     pandera_schema = build_pandera_schema(schema_json)
-    code = generate_transform_code(schema_json, rules)
+    cached_code = None if no_cache else get_cached_code(schema_json, rules)
+    if cached_code is not None:
+        print(f"♻️ {file_path}: reusing cached clean() — schema solved before, no LLM call")
+        code = cached_code
+        used_cache = True
+    else:
+        code = generate_transform_code(schema_json, rules, tag=file_path)
+        used_cache = False
     if dry_run:
         print("\n=== DRY RUN — SCHEMA ===")
         print(schema_json)
         print("\n=== DRY RUN — GENERATED CODE ===")
         print(code)
-        return {"file": file_path, "success": None, "attempts": 0}
+        return {"file": file_path, "success": None, "attempts": 0, "usage": _run_usage(file_path)}
 
     attempt = 0
     success = False
@@ -74,7 +84,8 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
-            code = fix_transform_code(code, exec_error, schema_json)
+            code = _next_code(code, exec_error, schema_json, rules, file_path, used_cache)
+            used_cache = False
             continue
 
         ok, failures = validate(cleaned_df, pandera_schema)
@@ -92,13 +103,36 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
-            code = fix_transform_code(code, str(failures), schema_json)
+            code = _next_code(code, str(failures), schema_json, rules, file_path, used_cache)
+            used_cache = False
 
-    if success and output_path:
-        cleaned_df.to_csv(output_path, index=False)
-        print(f"Wrote {output_path}")
+    if success:
+        if not no_cache:
+            set_cached_code(schema_json, rules, code)
+        if output_path:
+            cleaned_df.to_csv(output_path, index=False)
+            print(f"Wrote {output_path}")
 
-    return {"file": file_path, "success": success, "attempts": attempt}
+    usage = _run_usage(file_path)
+    if usage["calls"]:
+        cost = f" (est. ${usage['cost_usd']:.4f})" if usage["cost_usd"] is not None else ""
+        print(f"💰 {file_path}: {usage['calls']} LLM call(s), {usage['total_tokens']} tokens{cost}")
+    return {"file": file_path, "success": success, "attempts": attempt, "usage": usage}
+
+
+def _next_code(broken_code, error_info, schema_json, rules, file_path, used_cache):
+    """Repair path: a stale cache entry gets ONE fresh generation (not a fix
+    of code that was never right for this data); otherwise ask for a fix."""
+    if used_cache:
+        print("Cached code failed — falling back to fresh generation.")
+        return generate_transform_code(schema_json, rules, tag=file_path)
+    return fix_transform_code(broken_code, error_info, schema_json, tag=file_path)
+
+
+def _run_usage(file_path):
+    totals = usage_totals(tag=file_path)
+    totals["cost_usd"] = estimate_cost(totals["prompt_tokens"], totals["completion_tokens"])
+    return totals
 
 
 def load_config(config_path):

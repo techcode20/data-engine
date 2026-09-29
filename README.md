@@ -66,6 +66,25 @@ View historical pass rates and average retry counts per dataset:
 python trends.py
 ```
 
+## Cost & caching
+
+Every Gemini call is metered in `gemini_client.py` (per-dataset attribution, so batch runs stay honest). Each run prints its totals, `run_summary.json` keeps them, and `trends.py` aggregates tokens per dataset:
+
+```
+💰 sample_data.csv: 2 LLM call(s), 3841 tokens (est. $0.0021)
+```
+
+Dollar estimates appear only when you set rates from the provider pricing page (no hardcoded prices — they change):
+
+```
+GEMINI_PRICE_INPUT_PER_MTOK=0.50
+GEMINI_PRICE_OUTPUT_PER_MTOK=2.00
+```
+
+Two caches cut repeat spend to zero:
+- `schema_cache.json` — inferred schemas, keyed by dataset+rules+content (URLs fingerprint fetched content, so changed APIs re-infer; `--no-cache` bypasses).
+- `code_cache.json` — known-good `clean()` functions, keyed by schema+rules. Reused with no LLM call; execution + validation still run, and a stale entry falls back to fresh generation exactly once.
+
 Run the test suite (via `python -m pytest`, not bare `pytest` — the `pytest.exe` shim is blocked by Device Guard on some machines):
 
 ```
