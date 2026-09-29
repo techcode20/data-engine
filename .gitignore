@@ -18,6 +18,7 @@ fix_log.jsonl
 run_summary.json
 retrain_trigger.json
 logs/
+dashboard.html
 
 # test / coverage / build artifacts
 .pytest_cache/

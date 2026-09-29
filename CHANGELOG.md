@@ -34,3 +34,6 @@ Budget-guarded retries and deterministic pre-clean pass
 
 ## 0.2.3 — 2026-09-29
 Spend alerts for scheduled runs and opt-in smart pre-parsers
+
+## 0.2.4 — 2026-09-29
+Static HTML dashboard for run history

@@ -101,6 +101,14 @@ run_tests.bat
 
 Schedule the daily batch on Windows with Task Scheduler pointing at `run_daily.bat` (runs `--cadence daily` configs, appends to `logs\daily_run.log`, pops an alert on failure).
 
+See the visual frontend:
+
+```
+python dashboard.py
+```
+
+This builds `dashboard.html` from your run history (pass rates, tokens, latest runs, recent self-corrections) — open it in a browser, and re-run the script to refresh after new runs.
+
 Cut a release after merging a feature:
 
 ```
