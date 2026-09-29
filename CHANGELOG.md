@@ -28,3 +28,6 @@ Packaging, dead-code removal, and scheduled-run hardening
 
 ## 0.2.1 — 2026-09-29
 LLM metering, clean-code reuse cache, model verification
+
+## 0.2.2 — 2026-09-29
+Budget-guarded retries and deterministic pre-clean pass

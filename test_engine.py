@@ -1,4 +1,5 @@
 from unittest.mock import patch
+import os
 import pandas as pd
 from engine import process_one
 
@@ -96,3 +97,22 @@ def test_process_one_falls_back_to_fresh_generation_on_stale_cache(mock_schema_g
     assert result["success"] is True
     assert result["attempts"] == 2
     assert mock_code_gen.call_count == 1  # one fresh generation, no fix calls for stale cache
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_budget_guard_stops_retries(mock_schema_gen, mock_code_gen, tmp_path):
+    csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n")
+    mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
+    mock_code_gen.return_value = "def clean(df):\n    return df"  # always fails
+    big_spend = {"calls": 5, "prompt_tokens": 10_000_000,
+                 "completion_tokens": 5_000_000, "total_tokens": 15_000_000}
+    rates = {"GEMINI_PRICE_INPUT_PER_MTOK": "1.0", "GEMINI_PRICE_OUTPUT_PER_MTOK": "2.0"}
+    with patch.dict(os.environ, rates):
+        with patch("engine.usage_totals", return_value=big_spend):
+            result = process_one(csv_path, "id must be an integer", retries=5,
+                                 output_path=None, max_cost_usd=0.01)
+
+    assert result["success"] is False
+    assert result["attempts"] == 1
+    assert result["budget_stopped"] is True
+    assert mock_code_gen.call_count == 1  # initial generation only — no paid fix calls

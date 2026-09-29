@@ -81,6 +81,8 @@ GEMINI_PRICE_INPUT_PER_MTOK=0.50
 GEMINI_PRICE_OUTPUT_PER_MTOK=2.00
 ```
 
+Cap spend per dataset with `--max-cost-usd` (or `max_cost:` per config): once the estimated cost of a dataset's retries reaches the cap, the engine stops retrying and marks the result `budget_stopped`. Without configured rates the guard warns and stays inactive.
+
 Two caches cut repeat spend to zero:
 - `schema_cache.json` — inferred schemas, keyed by dataset+rules+content (URLs fingerprint fetched content, so changed APIs re-infer; `--no-cache` bypasses).
 - `code_cache.json` — known-good `clean()` functions, keyed by schema+rules. Reused with no LLM call; execution + validation still run, and a stale entry falls back to fresh generation exactly once.
@@ -102,6 +104,7 @@ python bump_version.py "Short note for the changelog"
 ## How it works
 
 1. **ingest.py** — loads raw CSV (as strings), local JSON, or a paginated API (Link-header, `page` param, or auto-detected) into a DataFrame. Native JSON types are preserved; CSVs stay strings until cleaning.
+2. **pre_clean.py** — deterministic, zero-LLM tidy pass (trims whitespace, maps empties to NaN, drops wholly-empty rows) so the model starts from clean input. Disable per run with `--no-pre-clean`.
 2. **schema_inference.py** — asks the model to propose a target schema (types, nullability, uniqueness, allowed values, min values) from a sample + your business rules
 3. **schema_builder.py** — turns that JSON schema into a real `pandera.DataFrameSchema`
 4. **schema_cache.py** — caches inferred schemas per dataset+rules+content hash (URLs hash by address; `--no-cache` bypasses)
@@ -127,6 +130,8 @@ strict: false                     # optional, fail fast with no retries (like --
 max_drop: 0.75                    # optional, max row-drop fraction (like --max-drop)
 no_cache: false                   # optional, re-infer schema every run
 sample_rows: 15                   # optional, rows sampled for inference
+no_pre_clean: false               # optional, skip the deterministic tidy pass
+max_cost: 0.10                    # optional, USD cap per dataset (needs price rates)
 ```
 
 ## Secrets

@@ -12,6 +12,7 @@ from code_cache import get_cached_code, set_cached_code
 from fix_memory import log_fix
 from gemini_client import estimate_cost, reset_usage, usage_totals
 from ingest import ingest
+from pre_clean import format_report, pre_clean
 from run_summary import write_summary
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
@@ -43,9 +44,14 @@ def _content_fingerprint(source: str, df) -> str | None:
 
 
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
-                no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75):
+                no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
+                no_pre_clean=False, max_cost_usd=None):
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     df = ingest(file_path, pagination=pagination)
+    if not no_pre_clean:
+        df, pre_report = pre_clean(df)
+        if not quiet:
+            print(f"🧹 pre-clean: {format_report(pre_report)}")
     fingerprint = _content_fingerprint(file_path, df)
     schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
     if schema_json is None:
@@ -66,10 +72,12 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         print(schema_json)
         print("\n=== DRY RUN — GENERATED CODE ===")
         print(code)
-        return {"file": file_path, "success": None, "attempts": 0, "usage": _run_usage(file_path)}
+        return {"file": file_path, "success": None, "attempts": 0,
+                "usage": _run_usage(file_path), "budget_stopped": False}
 
     attempt = 0
     success = False
+    budget_stopped = False
     cleaned_df = None
 
     while attempt < retries and not success:
@@ -81,6 +89,10 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         if exec_error:
             print("Execution failed. Asking model to fix it...")
             log_fix(file_path, attempt, exec_error, code)
+            if _over_budget(file_path, max_cost_usd):
+                print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
+                budget_stopped = True
+                break
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
@@ -100,6 +112,10 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         else:
             print("Validation failed. Asking model to fix it...")
             log_fix(file_path, attempt, str(failures), code)
+            if _over_budget(file_path, max_cost_usd):
+                print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
+                budget_stopped = True
+                break
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
@@ -117,7 +133,17 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
     if usage["calls"]:
         cost = f" (est. ${usage['cost_usd']:.4f})" if usage["cost_usd"] is not None else ""
         print(f"💰 {file_path}: {usage['calls']} LLM call(s), {usage['total_tokens']} tokens{cost}")
-    return {"file": file_path, "success": success, "attempts": attempt, "usage": usage}
+    return {"file": file_path, "success": success, "attempts": attempt,
+            "usage": usage, "budget_stopped": budget_stopped}
+
+
+def _over_budget(file_path, max_cost_usd) -> bool:
+    """True when a cap is set, rates are configured, and spend hit the cap."""
+    if max_cost_usd is None:
+        return False
+    totals = usage_totals(tag=file_path)
+    spent = estimate_cost(totals["prompt_tokens"], totals["completion_tokens"])
+    return spent is not None and spent >= max_cost_usd
 
 
 def _next_code(broken_code, error_info, schema_json, rules, file_path, used_cache):
@@ -178,9 +204,14 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="Suppress per-attempt progress output")
     parser.add_argument("--no-cache", action="store_true", help="Bypass the schema cache (re-infer every run)")
     parser.add_argument("--strict", action="store_true", help="Fail fast on first error: no self-correct retries")
+    parser.add_argument("--no-pre-clean", action="store_true", help="Skip the deterministic pre-clean pass")
+    parser.add_argument("--max-cost-usd", type=float, default=None, help="Stop retrying a dataset once estimated LLM spend reaches this USD cap (needs GEMINI_PRICE_* rates)")
     parser.add_argument("--max-drop", type=float, default=0.75, help="Fail validation if cleaning drops more than this fraction of rows (default: 0.75)")
     parser.add_argument("--sample-rows", type=int, default=15, help="Rows sampled for schema inference: head + deterministic random slice (default: 15)")
     args = parser.parse_args()
+    if args.max_cost_usd is not None and estimate_cost(1, 1) is None:
+        print("WARNING: --max-cost-usd is set but GEMINI_PRICE_INPUT_PER_MTOK / "
+              "GEMINI_PRICE_OUTPUT_PER_MTOK are not configured — budget guard is inactive.")
     if args.file:
         args.file = substitute_env_vars(args.file)
     if args.rules:
@@ -239,6 +270,8 @@ def main():
                     sample_rows=cfg.get("sample_rows", args.sample_rows),
                     strict=cfg.get("strict", args.strict),
                     max_drop_fraction=cfg.get("max_drop", args.max_drop),
+                    no_pre_clean=cfg.get("no_pre_clean", args.no_pre_clean),
+                    max_cost_usd=cfg.get("max_cost", args.max_cost_usd),
                 ): cfg["file"]
                 for cfg in configs_to_run
             }
@@ -248,7 +281,7 @@ def main():
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
 
-        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop)
+        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop, no_pre_clean=args.no_pre_clean, max_cost_usd=args.max_cost_usd)
         results.append(result)
 
     print("\n=== SUMMARY ===")
