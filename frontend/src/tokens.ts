@@ -1,37 +1,35 @@
-/** Single source of truth for PipelineForge design tokens. */
+/** PipelineForge Transit — single source of truth for design tokens. */
 
 export const COLORS = {
-  void: "#07080d",
-  panel: "#0c0e16",
-  ink: "#e6e9f2",
-  muted: "#9aa3b5",
-  faint: "#5b6478",
-  violet: "#8b5cf6",
-  cyan: "#22d3ee",
-  mint: "#34d399",
-  rose: "#f43f5e",
-  amber: "#fbbf24",
-  edge: "rgba(255,255,255,0.09)",
+  paper: "#f6f3ea",
+  card: "#fffdf6",
+  ink: "#141210",
+  muted: "#6b6455",
+  faint: "#a8a091",
+  main: "#e3342f",
+  validation: "#2563eb",
+  memory: "#16a34a",
+  repair: "#f59e0b",
+  hazardYellow: "#facc15",
+  hazardBlack: "#111111",
+  clean: "#ffffff",
+  dirty: "#fb923c",
+  rejected: "#78716c",
 } as const;
 
-export const SPACING = {
-  xs: 4,
-  sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  xxl: 48,
-} as const;
+export const LINE_WIDTH = 10;
+export const STATION_R = 13;
+export const CORNER_R = 26;
 
 export const FONTS = {
-  ui: '"Inter", system-ui, sans-serif',
-  code: '"JetBrains Mono", ui-monospace, monospace',
+  sign: '"Space Grotesk", "Helvetica Neue", Arial, sans-serif',
+  board: '"IBM Plex Mono", ui-monospace, monospace',
 } as const;
 
-export const STATUS_COLOR: Record<string, string> = {
-  idle: COLORS.faint,
-  running: COLORS.cyan,
-  passed: COLORS.mint,
-  failed: COLORS.rose,
-  retrying: COLORS.amber,
+export const STAGE_STATUS_LABEL: Record<string, string> = {
+  idle: "NO SERVICE",
+  running: "APPROACHING",
+  passed: "ON TIME",
+  failed: "DELAYED",
+  retrying: "REROUTING",
 };

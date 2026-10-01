@@ -1,8 +1,16 @@
 import { create } from "zustand";
-import { Player, type EngineEvent, type Speed } from "./simulation/engine";
+import { TransitEngine, type Speed } from "./simulation/engine";
 import { ATTEMPTS, baseMemory } from "./simulation/script";
-import type { CheckItem, MemoryLink, MemoryNode, StageId, StageState } from "./simulation/types";
-import { STAGES } from "./simulation/engine";
+import type { StationId } from "./transit/mapConfig";
+import type {
+  CarriageState,
+  CheckItem,
+  EngineEvent,
+  MemoryLink,
+  MemoryNode,
+  StageStatus,
+} from "./simulation/types";
+import { STAGE_META } from "./simulation/stageMeta";
 
 export interface UploadedFile {
   name: string;
@@ -21,55 +29,80 @@ export interface StoredLog {
   text: string;
 }
 
-interface PipelineState {
+type StageState = { status: StageStatus; durationMs: number | null };
+
+interface TransitState {
   file: UploadedFile | null;
   fileError: string | null;
   phase: Phase;
   attempt: number;
   maxRetries: number;
-  stages: Record<StageId, StageState>;
+  stages: Record<StationId, StageState>;
   latestVersion: number;
   viewingVersion: number;
   checks: CheckItem[];
   score: number;
   scoreHistory: number[];
   errorText: string | null;
+  disruption: string | null;
+  rerouteOn: boolean;
+  crewVisible: boolean;
+  carriages: CarriageState[];
   logs: StoredLog[];
+  alerts: string[];
   memNodes: MemoryNode[];
   memLinks: MemoryLink[];
+  board: { next: string; status: string };
+  ticketsOut: boolean;
   speed: Speed;
   paused: boolean;
-  drawer: StageId | null;
+  sound: boolean;
+  follow: boolean;
+  mobile: boolean;
+  selectedStation: StationId | null;
+  selectedCarriage: number | null;
   logFilter: string;
   logPaused: boolean;
   memoryQuery: string;
 
   loadSample: () => void;
   loadFile: (f: File) => Promise<void>;
-  run: () => void;
+  depart: () => void;
   togglePause: () => void;
   reset: () => void;
   setSpeed: (s: Speed) => void;
-  setDrawer: (id: StageId | null) => void;
+  setSound: (b: boolean) => void;
+  setFollow: (b: boolean) => void;
+  setMobile: (m: boolean) => void;
+  selectStation: (id: StationId | null) => void;
+  selectCarriage: (n: number | null) => void;
   setViewingVersion: (v: number) => void;
   setLogFilter: (f: string) => void;
   setLogPaused: (b: boolean) => void;
   setMemoryQuery: (q: string) => void;
+  scrubToAttempt: (n: number) => void;
   applyEvent: (e: EngineEvent) => void;
 }
 
-const idleStages = (): Record<StageId, StageState> =>
-  Object.fromEntries(STAGES.map((s) => [s.id, { status: "idle", durationMs: null }])) as Record<StageId, StageState>;
+const idleStages = (): Record<StationId, StageState> =>
+  Object.fromEntries(
+    (Object.keys(STAGE_META) as StationId[]).map((id) => [id, { status: "idle", durationMs: null }]),
+  ) as Record<StationId, StageState>;
 
 let logSeq = 0;
-let player: Player | null = null;
+let engine: TransitEngine | null = null;
 
-function getPlayer(apply: (e: EngineEvent) => void): Player {
-  if (!player) player = new Player(apply);
-  return player;
+function getEngine(apply: (e: EngineEvent) => void): TransitEngine {
+  if (!engine) engine = new TransitEngine();
+  engine.onEvent(apply);
+  return engine;
 }
 
-export const usePipeline = create<PipelineState>()((set, get) => ({
+export function engineRef(): TransitEngine | null {
+  return engine;
+}
+
+export const useTransit = create<TransitState>()((set, get) => ({
   file: null,
   fileError: null,
   phase: "idle",
@@ -82,19 +115,30 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
   score: 0,
   scoreHistory: [],
   errorText: null,
+  disruption: null,
+  rerouteOn: false,
+  crewVisible: false,
+  carriages: ["dirty", "dirty", "dirty", "dirty"],
   logs: [],
+  alerts: [],
   memNodes: baseMemory().nodes,
   memLinks: baseMemory().links,
+  board: { next: "Intake Central", status: "STANDBY" },
+  ticketsOut: false,
   speed: 1,
   paused: false,
-  drawer: null,
+  sound: false,
+  follow: false,
+  mobile: false,
+  selectedStation: null,
+  selectedCarriage: null,
   logFilter: "ALL",
   logPaused: false,
   memoryQuery: "",
 
   loadSample: () =>
     set({
-      file: { name: "northwind_customers_messy.csv", size: 1843, rows: 10, cols: 8, kind: "sample" },
+      file: { name: "ridership_customers_messy.csv", size: 2156, rows: 8, cols: 7, kind: "sample" },
       fileError: null,
     }),
 
@@ -103,7 +147,7 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
     const isCsv = lower.endsWith(".csv");
     const isJson = lower.endsWith(".json");
     if (!isCsv && !isJson) {
-      set({ fileError: `Unsupported type "${f.name}". Drop a .csv or .json file.` });
+      set({ fileError: `No service for "${f.name}" — this gate accepts .csv and .json only.` });
       return;
     }
     try {
@@ -125,13 +169,16 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
         fileError: null,
       });
     } catch {
-      set({ fileError: `Could not parse "${f.name}". Is it valid ${isCsv ? "CSV" : "JSON"}?` });
+      set({ fileError: `Could not read "${f.name}" at the gate — is it valid ${isCsv ? "CSV" : "JSON"}?` });
     }
   },
 
-  run: () => {
-    const p = getPlayer((e) => get().applyEvent(e));
-    p.stop();
+  depart: () => {
+    const e = getEngine((ev) => get().applyEvent(ev));
+    e.stop();
+    e.setSpeed(get().speed);
+    e.setMobile(get().mobile);
+    e.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     logSeq = 0;
     const mem = baseMemory();
     set({
@@ -144,30 +191,36 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
       score: 0,
       scoreHistory: [],
       errorText: null,
+      disruption: null,
+      rerouteOn: false,
+      crewVisible: false,
+      carriages: ["dirty", "dirty", "dirty", "dirty"],
       logs: [],
+      alerts: [],
       memNodes: mem.nodes,
       memLinks: mem.links,
+      board: { next: "Intake Central", status: "BOARDING" },
+      ticketsOut: false,
       paused: false,
-      drawer: null,
+      selectedStation: null,
+      selectedCarriage: null,
     });
-    p.setSpeed(get().speed);
-    p.start();
+    e.start();
   },
 
   togglePause: () => {
-    if (get().phase !== "running") return;
-    const p = getPlayer((e) => get().applyEvent(e));
+    if (get().phase !== "running" || !engine) return;
     if (get().paused) {
-      p.resume();
+      engine.resume();
       set({ paused: false });
     } else {
-      p.pause();
+      engine.pause();
       set({ paused: true });
     }
   },
 
   reset: () => {
-    if (player) player.stop();
+    engine?.stop();
     logSeq = 0;
     const mem = baseMemory();
     set({
@@ -180,23 +233,48 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
       score: 0,
       scoreHistory: [],
       errorText: null,
+      disruption: null,
+      rerouteOn: false,
+      crewVisible: false,
+      carriages: ["dirty", "dirty", "dirty", "dirty"],
       logs: [],
+      alerts: [],
       memNodes: mem.nodes,
       memLinks: mem.links,
+      board: { next: "Intake Central", status: "STANDBY" },
+      ticketsOut: false,
       paused: false,
-      drawer: null,
+      selectedStation: null,
+      selectedCarriage: null,
     });
   },
 
   setSpeed: (s) => {
     set({ speed: s });
-    if (player) player.setSpeed(s);
+    engine?.setSpeed(s);
   },
-  setDrawer: (id) => set({ drawer: id }),
+  setSound: (b) => set({ sound: b }),
+  setFollow: (b) => set({ follow: b }),
+  setMobile: (m) => {
+    if (get().mobile !== m) {
+      set({ mobile: m });
+      engine?.setMobile(m);
+    }
+  },
+  selectStation: (id) => set({ selectedStation: id }),
+  selectCarriage: (n) => set({ selectedCarriage: n }),
   setViewingVersion: (v) => set({ viewingVersion: v }),
   setLogFilter: (f) => set({ logFilter: f }),
   setLogPaused: (b) => set({ logPaused: b }),
   setMemoryQuery: (q) => set({ memoryQuery: q }),
+
+  scrubToAttempt: (n: number) => {
+    if (get().phase === "idle" || !engine) return;
+    engine.setMobile(get().mobile);
+    engine.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    engine.replayAttempt(n);
+    set({ paused: false, phase: "running" });
+  },
 
   applyEvent: (e) => {
     switch (e.type) {
@@ -226,18 +304,39 @@ export const usePipeline = create<PipelineState>()((set, get) => ({
       case "error":
         set({ errorText: e.text });
         break;
-      case "log": {
-        const id = ++logSeq;
-        const stamp = `t+${(id * 0.9).toFixed(1)}s`;
-        set((s) => ({ logs: [...s.logs, { id, t: stamp, level: e.level, text: e.text }] }));
+      case "alert":
+        set((s) => ({ alerts: [...s.alerts.slice(-5), e.text] }));
         break;
-      }
       case "memory-add":
         set((s) => ({
           memNodes: [...s.memNodes, ...e.nodes.filter((n) => !s.memNodes.some((m) => m.id === n.id))],
           memLinks: [...s.memLinks, ...e.links],
         }));
         break;
+      case "carriages":
+        set({ carriages: e.states });
+        break;
+      case "disruption":
+        set({ disruption: e.on ? (e.label ?? "Signal fault") : null });
+        break;
+      case "reroute":
+        set({ rerouteOn: e.on });
+        break;
+      case "crew":
+        set({ crewVisible: e.visible });
+        break;
+      case "board":
+        set({ board: { next: e.next, status: e.status } });
+        break;
+      case "tickets":
+        set({ ticketsOut: true });
+        break;
+      case "log": {
+        const id = ++logSeq;
+        const stamp = `t+${(id * 0.9).toFixed(1)}s`;
+        set((s) => ({ logs: [...s.logs, { id, t: stamp, level: e.level, text: e.text }] }));
+        break;
+      }
       case "done":
         set((s) => ({
           phase: "done",

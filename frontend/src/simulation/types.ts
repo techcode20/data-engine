@@ -1,29 +1,16 @@
-/** Core simulation types. The engine behind these is swappable:
- *  implement `PipelineBackend` against the real API and the UI keeps working. */
+/** Transit-simulation types. Stages ARE stations; datasets ride as trains. */
+import type { StationId } from "../transit/mapConfig";
 
 export type StageStatus = "idle" | "running" | "passed" | "failed" | "retrying";
 
-export type StageId =
-  | "ingest"
-  | "infer"
-  | "generate"
-  | "sandbox"
-  | "validate"
-  | "self-correct"
-  | "log-fix";
-
 export interface StageMeta {
-  id: StageId;
+  id: StationId;
   label: string;
   blurb: string;
   detail: string;
-  /** Real backend module this stage mirrors. */
   module: string;
-}
-
-export interface StageState {
-  status: StageStatus;
-  durationMs: number | null;
+  inputs: string[];
+  outputs: string[];
 }
 
 export type LogLevel = "INFO" | "WARN" | "ERROR" | "FIX" | "OK";
@@ -42,9 +29,18 @@ export interface CheckItem {
   detail: string;
 }
 
-export interface CellFlag {
-  kind: "null" | "type" | "dup" | "outlier" | "format";
-  note: string;
+export type CarriageState = "dirty" | "clean" | "partial" | "rejected";
+
+export interface BatchRow {
+  values: string[];
+  fate: "kept" | "dropped";
+  reason: string;
+}
+
+export interface CarriageInfo {
+  id: number;
+  label: string;
+  rows: BatchRow[];
 }
 
 export interface MemoryNode {
@@ -68,13 +64,42 @@ export interface AttemptScript {
   summary: string;
   checks: CheckItem[];
   errorFedBack: string | null;
+  disruption: string | null;
+  alert: string;
   logs: Array<{ level: LogLevel; text: string }>;
   newMemory: { nodes: MemoryNode[]; links: MemoryLink[] };
+  carriages: CarriageState[];
 }
 
-/** Backend contract — SimulatedBackend implements this today,
- *  a future ApiBackend will POST to the real engine. */
+export type Speed = 1 | 2 | 4;
+
+/** Backend contract — the simulated engine implements this; a future
+ *  ApiBackend will stream the same events from the real pipeline. */
 export interface PipelineBackend {
-  readonly stages: StageMeta[];
-  runDataset(): void;
+  start(): void;
+  pause(): void;
+  resume(): void;
+  stop(): void;
+  setSpeed(s: Speed): void;
+  replayAttempt(n: number): void;
+  onEvent(cb: (e: EngineEvent) => void): void;
 }
+
+export type EngineEvent =
+  | { type: "stage"; id: StationId; status: StageStatus; durationMs?: number | null }
+  | { type: "stages-reset" }
+  | { type: "attempt"; n: number }
+  | { type: "code"; version: number }
+  | { type: "checks"; items: CheckItem[] }
+  | { type: "score"; value: number }
+  | { type: "log"; level: LogLevel; text: string }
+  | { type: "error"; text: string | null }
+  | { type: "alert"; text: string }
+  | { type: "memory-add"; nodes: MemoryNode[]; links: MemoryLink[] }
+  | { type: "carriages"; states: CarriageState[] }
+  | { type: "disruption"; on: boolean; label?: string }
+  | { type: "reroute"; on: boolean }
+  | { type: "crew"; visible: boolean }
+  | { type: "board"; next: string; status: string }
+  | { type: "tickets" }
+  | { type: "done" };

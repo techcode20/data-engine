@@ -23,6 +23,7 @@ dashboard.html
 # frontend build artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/simcheck-dist/
 
 # test / coverage / build artifacts
 .pytest_cache/
