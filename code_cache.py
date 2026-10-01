@@ -8,8 +8,10 @@ generation exactly once.
 import hashlib
 import json
 import os
+import threading
 
 CODE_CACHE_PATH = "code_cache.json"
+_lock = threading.Lock()  # batch mode shares this file across worker threads
 
 
 def _cache_key(schema_json: str, rules: str) -> str:
@@ -34,7 +36,12 @@ def get_cached_code(schema_json: str, rules: str) -> str | None:
 
 
 def set_cached_code(schema_json: str, rules: str, code: str):
-    cache = _load_cache()
-    cache[_cache_key(schema_json, rules)] = code
-    with open(CODE_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2)
+    with _lock:
+        cache = _load_cache()
+        cache[_cache_key(schema_json, rules)] = code
+        with open(CODE_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+        try:
+            os.chmod(CODE_CACHE_PATH, 0o600)
+        except OSError:
+            pass

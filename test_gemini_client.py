@@ -39,7 +39,7 @@ def test_generate_records_usage_without_network():
     gc.reset_usage()
     fake = SimpleNamespace(text="hi", usage_metadata=SimpleNamespace(
         prompt_token_count=3, candidates_token_count=1, total_token_count=4))
-    mock_models = SimpleNamespace(generate_content=lambda model, contents: fake)
+    mock_models = SimpleNamespace(generate_content=lambda model, contents, config=None: fake)
     with patch.object(gc, "_client", SimpleNamespace(models=mock_models)):
         assert gc.generate("hello", purpose="p", tag="t") == "hi"
     totals = gc.usage_totals(tag="t")

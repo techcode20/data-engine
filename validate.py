@@ -38,3 +38,25 @@ def sanity_checks(raw_df, cleaned_df, max_drop_fraction: float = DEFAULT_MAX_DRO
             if cleaned_df[col].isnull().all() and not raw_df[col].isnull().all():
                 issues.append(f"column '{col}' is entirely null after cleaning")
     return issues
+
+
+def redact_failure_cases(failures) -> str:
+    """Render failure_cases for LOGS with raw cell values replaced by shapes.
+
+    The live fix prompt keeps full values (same-dataset debugging), but
+    anything persisted (fix_log) or reused across datasets must not carry
+    customer data — see B6. Returns a string either way.
+    """
+    try:
+        import pandas as pd
+
+        if isinstance(failures, pd.DataFrame) and "failure_case" in failures.columns:
+            redacted = failures.copy()
+            redacted["failure_case"] = redacted["failure_case"].map(
+                lambda v: f"<{type(v).__name__} len={len(str(v))}>"
+            )
+            return str(redacted)
+    except Exception:
+        pass
+    text = str(failures)
+    return text[:1000]

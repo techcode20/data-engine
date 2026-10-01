@@ -47,7 +47,10 @@ def try_parse_datetime(series: pd.Series) -> tuple[pd.Series, bool]:
     non_null = series.dropna()
     if non_null.empty or pd.api.types.is_datetime64_any_dtype(series):
         return series, False
-    parsed = pd.to_datetime(non_null.astype(str), format="mixed", errors="coerce")
+    text = non_null.astype(str)
+    if text.str.fullmatch(r"\d{4}").all():
+        return series, False  # bare years ("2023") are not dates — refuse the guess
+    parsed = pd.to_datetime(text, format="mixed", errors="coerce")
     if parsed.isna().any():
         return series, False
     if getattr(parsed.dt, "tz", None) is not None:
@@ -108,3 +111,33 @@ def format_report(report: dict) -> str:
     if report["rows_dropped"]:
         parts.append(f"{report['rows_dropped']} empty rows dropped")
     return ", ".join(parts) if parts else "already tidy"
+
+
+def sanitize_export_cells(df: pd.DataFrame) -> pd.DataFrame:
+    """Neutralize spreadsheet formula injection on CSV export.
+
+    A cell like ``=cmd|'/c calc'!A0`` executes when the CSV is opened in
+    Excel/Sheets. Prefix string cells starting with = + @ | tab/CR (and
+    -/+ only when NOT followed by a digit/dot, so '-5' and '+3.2' survive)
+    with a single quote. Numeric dtypes are never touched.
+    """
+    df = df.copy()
+    for col in df.select_dtypes(include=["object", "string"]).columns:
+        df[col] = df[col].map(_quote_if_formula)
+    return df
+
+
+def _quote_if_formula(v):
+    if not isinstance(v, str):
+        return v
+    s = v.lstrip()
+    if not s:
+        return v
+    if s[0] in ("=", "@", "|"):
+        return "'" + v
+    if v[0] in ("\t", "\r", "\n"):
+        # Leading control whitespace can smuggle a trigger past readers
+        return "'" + v
+    if s[0] in ("-", "+") and (len(s) == 1 or not (s[1].isdigit() or s[1] == ".")):
+        return "'" + v
+    return v

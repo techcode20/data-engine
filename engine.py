@@ -5,6 +5,9 @@ import hashlib
 import os
 import re
 import sys
+import uuid
+
+import pandas as pd
 import yaml
 
 from code_gen import fix_transform_code, generate_transform_code
@@ -12,12 +15,12 @@ from code_cache import get_cached_code, set_cached_code
 from fix_memory import log_fix
 from gemini_client import estimate_cost, reset_usage, usage_totals
 from ingest import ingest
-from pre_clean import format_report, pre_clean, smart_parse
+from pre_clean import format_report, pre_clean, sanitize_export_cells, smart_parse
 from run_summary import write_summary
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
 from schema_inference import infer_schema
-from validate import validate, sanity_checks
+from validate import redact_failure_cases, sanity_checks, validate
 from importlib.metadata import version as _pkg_version
 from schema_cache import get_cached_schema, set_cached_schema
 from dotenv import load_dotenv
@@ -34,6 +37,22 @@ def substitute_env_vars(text: str) -> str:
     def replace(match):
         return os.getenv(match.group(1), match.group(0))
     return re.sub(r"\{([A-Z_][A-Z0-9_]*)\}", replace, text)
+
+
+def _infer_valid_schema(df, rules, sample_rows, file_path, max_schema_tries=2):
+    """Infer until the schema parses (or tries run out). Malformed model JSON
+    is a retryable model failure, not a process crash."""
+    last_error = None
+    for i in range(max_schema_tries):
+        schema_json = infer_schema(df, rules, sample_rows=sample_rows, tag=file_path)
+        try:
+            build_pandera_schema(schema_json)
+            return schema_json
+        except ValueError as e:
+            last_error = e
+            print(f"Schema attempt {i + 1} unparseable ({e}); asking model to re-emit JSON...")
+            log_fix(file_path, 0, f"malformed schema JSON (try {i + 1}): {e}", schema_json)
+    raise ValueError(f"model could not emit a valid schema: {last_error}")
 
 
 def _content_fingerprint(source: str, df) -> str | None:
@@ -53,32 +72,61 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
                 no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False):
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
-    df = ingest(file_path, pagination=pagination)
-    if not no_pre_clean:
-        df, pre_report = pre_clean(df)
-        if not quiet:
-            print(f"🧹 pre-clean: {format_report(pre_report)}")
-    if smart_parse_cols:
-        df, parse_report = smart_parse(df)
-        if not quiet:
-            parsed = (parse_report["currency_parsed"] + parse_report["dates_parsed"]
-                      or ["nothing confidently parseable"])
-            print(f"🔍 smart-parse: {', '.join(parsed)}")
-    fingerprint = _content_fingerprint(file_path, df)
-    schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
-    if schema_json is None:
-        schema_json = infer_schema(df, rules, sample_rows=sample_rows, tag=file_path)
-    if not no_cache:
-        set_cached_schema(file_path, rules, schema_json, fingerprint)
-    pandera_schema = build_pandera_schema(schema_json)
-    cached_code = None if no_cache else get_cached_code(schema_json, rules)
-    if cached_code is not None:
-        print(f"♻️ {file_path}: reusing cached clean() — schema solved before, no LLM call")
-        code = cached_code
-        used_cache = True
-    else:
-        code = generate_transform_code(schema_json, rules, tag=file_path)
-        used_cache = False
+    try:
+        df = ingest(file_path, pagination=pagination)
+        if not no_pre_clean:
+            df, pre_report = pre_clean(df)
+            if not quiet:
+                print(f"🧹 pre-clean: {format_report(pre_report)}")
+        if smart_parse_cols:
+            df, parse_report = smart_parse(df)
+            if not quiet:
+                parsed = (parse_report["currency_parsed"] + parse_report["dates_parsed"]
+                          or ["nothing confidently parseable"])
+                print(f"🔍 smart-parse: {', '.join(parsed)}")
+        fingerprint = _content_fingerprint(file_path, df)
+        schema_json = None if no_cache else get_cached_schema(file_path, rules, fingerprint)
+        if schema_json is None:
+            try:
+                schema_json = _infer_valid_schema(df, rules, sample_rows, file_path)
+            except ValueError as e:
+                print(f"❌ {file_path}: unusable schema after re-inference: {e}")
+                log_fix(file_path, 0, f"schema rejected: {e}", "")
+                usage = _run_usage(file_path)
+                return {"file": file_path, "success": False, "attempts": 0,
+                        "usage": usage, "budget_stopped": False,
+                        "error": f"schema rejected: {e}",
+                        "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
+        if not no_cache:
+            set_cached_schema(file_path, rules, schema_json, fingerprint)
+        try:
+            pandera_schema = build_pandera_schema(schema_json)
+        except ValueError as e:
+            # Cached schemas were valid when stored; reaching here means cache
+            # corruption — fail this dataset loudly instead of crashing the batch.
+            print(f"❌ {file_path}: cached schema unusable: {e}")
+            usage = _run_usage(file_path)
+            return {"file": file_path, "success": False, "attempts": 0,
+                    "usage": usage, "budget_stopped": False,
+                    "error": f"cached schema unusable: {e}",
+                    "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
+        cached_code = None if no_cache else get_cached_code(schema_json, rules)
+        if cached_code is not None:
+            print(f"♻️ {file_path}: reusing cached clean() — schema solved before, no LLM call")
+            code = cached_code
+            used_cache = True
+        else:
+            code = generate_transform_code(schema_json, rules, tag=file_path)
+            used_cache = False
+    except Exception as e:
+        # Setup-phase failure (unreadable input, injection refusal, empty model
+        # response…): a FAIL result for this dataset, never a batch-killing crash.
+        print(f"❌ {file_path}: setup failed: {e}")
+        usage = _run_usage(file_path)
+        return {"file": file_path, "success": False, "attempts": 0,
+                "usage": usage, "budget_stopped": False,
+                "error": f"setup failed: {type(e).__name__}: {e}",
+                "rows_in": 0, "rows_out": 0, "rows_dropped": 0}
     if dry_run:
         print("\n=== DRY RUN — SCHEMA ===")
         print(schema_json)
@@ -91,12 +139,41 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
     success = False
     budget_stopped = False
     cleaned_df = None
+    last_frame = None  # best-effort partial output on terminal failure
+    seen_code = {hashlib.md5(code.encode("utf-8")).hexdigest()}
+
+    def _repair(current_code, problem):
+        """Next code via fix path; guarded — a fix-generation crash ends the run."""
+        nonlocal code, used_cache
+        try:
+            code = _next_code(current_code, problem, schema_json, rules, file_path, used_cache)
+        except Exception as e:
+            print(f"❌ {file_path}: fix generation failed ({e}) — stopping.")
+            log_fix(file_path, attempt, f"fix generation failed: {type(e).__name__}: {e}", current_code)
+            return False
+        used_cache = False  # fresh/fixed code is never the cached entry
+        digest = hashlib.md5(code.encode("utf-8")).hexdigest()
+        if digest in seen_code:
+            print(f"⛔ {file_path}: model repeated identical code — stopping instead of burning retries.")
+            return False
+        seen_code.add(digest)
+        return True
 
     while attempt < retries and not success:
         attempt += 1
         if not quiet:
             print(f"\n=== {file_path} — ATTEMPT {attempt} ===")
         cleaned_df, exec_error = run_generated_code(code, df)
+
+        if cleaned_df is not None and not isinstance(cleaned_df, pd.DataFrame):
+            # Model returned a non-frame (None, list, scalar): retryable, not fatal.
+            cleaned_df, exec_error = None, (
+                f"clean() must return a pandas DataFrame, got {type(cleaned_df).__name__}"
+            )
+        if isinstance(cleaned_df, pd.DataFrame):
+            last_frame = cleaned_df
+            if not quiet:
+                print(f"rows: {len(df)} → {len(cleaned_df)}")
 
         if exec_error:
             print("Execution failed. Asking model to fix it...")
@@ -108,8 +185,10 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
-            code = _next_code(code, exec_error, schema_json, rules, file_path, used_cache)
-            used_cache = False
+            if attempt >= retries:
+                break  # no budget left for another round — don't burn a fix call
+            if not _repair(code, exec_error):
+                break
             continue
 
         ok, failures = validate(cleaned_df, pandera_schema)
@@ -123,7 +202,9 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             success = True
         else:
             print("Validation failed. Asking model to fix it...")
-            log_fix(file_path, attempt, str(failures), code)
+            # Persist the REDACTED failure (shapes, not customer cell values);
+            # the live fix prompt below keeps full values for same-dataset repair.
+            log_fix(file_path, attempt, redact_failure_cases(failures), code)
             if _over_budget(file_path, max_cost_usd):
                 print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
                 budget_stopped = True
@@ -131,22 +212,56 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             if strict:
                 print(f"⛔ STRICT MODE: {file_path} failed on attempt {attempt} — stopping, no retries.")
                 break
-            code = _next_code(code, str(failures), schema_json, rules, file_path, used_cache)
-            used_cache = False
+            if attempt >= retries:
+                break  # no budget left for another round — don't burn a fix call
+            if not _repair(code, str(failures)):
+                break
 
+    if not success and not budget_stopped and not strict:
+        print(f"❌ {file_path}: gave up after {attempt} attempt(s)")
+
+    rows_out = len(last_frame) if isinstance(last_frame, pd.DataFrame) else 0
     if success:
         if not no_cache:
             set_cached_code(schema_json, rules, code)
         if output_path:
-            cleaned_df.to_csv(output_path, index=False)
+            _check_output_path(output_path)
+            sanitize_export_cells(cleaned_df).to_csv(output_path, index=False)
             print(f"Wrote {output_path}")
+    elif output_path and isinstance(last_frame, pd.DataFrame):
+        # Terminal failure still leaves evidence: best-effort partial output.
+        partial = _partial_path(output_path)
+        sanitize_export_cells(last_frame).to_csv(partial, index=False)
+        print(f"Wrote partial output {partial} ({rows_out} rows from last attempt)")
 
     usage = _run_usage(file_path)
     if usage["calls"]:
         cost = f" (est. ${usage['cost_usd']:.4f})" if usage["cost_usd"] is not None else ""
         print(f"💰 {file_path}: {usage['calls']} LLM call(s), {usage['total_tokens']} tokens{cost}")
+    print(f"🧾 reconciliation: {len(df)} in → {rows_out} out ({len(df) - rows_out} dropped)")
     return {"file": file_path, "success": success, "attempts": attempt,
-            "usage": usage, "budget_stopped": budget_stopped}
+            "usage": usage, "budget_stopped": budget_stopped,
+            "rows_in": len(df), "rows_out": rows_out,
+            "rows_dropped": len(df) - rows_out}
+
+
+def _partial_path(output_path: str) -> str:
+    """Sibling path for best-effort partial output on terminal failure."""
+    import os as _os
+
+    root, ext = _os.path.splitext(str(output_path))
+    return f"{root}.partial{ext or '.csv'}"
+
+
+def _check_output_path(output_path: str):
+    """Refuse parent-directory escapes in export paths.
+
+    Absolute paths elsewhere on disk are the operator's explicit choice and
+    stay allowed; `..` segments (classic traversal via shared configs) are not.
+    """
+    parts = str(output_path).replace("\\", "/").split("/")
+    if ".." in parts:
+        raise ValueError(f"refusing output path with parent escape: {output_path!r}")
 
 
 def _over_budget(file_path, max_cost_usd) -> bool:
@@ -173,6 +288,21 @@ def _run_usage(file_path):
     return totals
 
 
+def _validate_cli(args, parser):
+    """Fail fast on nonsense numeric options and traversal-y export paths."""
+    if args.retries is not None and args.retries < 1:
+        parser.error("--retries must be >= 1")
+    if args.max_drop is not None and not 0 <= args.max_drop <= 1:
+        parser.error("--max-drop must be between 0 and 1")
+    if args.sample_rows is not None and args.sample_rows < 1:
+        parser.error("--sample-rows must be >= 1")
+    if args.output:
+        try:
+            _check_output_path(args.output)
+        except ValueError as e:
+            parser.error(str(e))
+
+
 def load_config(config_path):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -181,6 +311,14 @@ def load_config(config_path):
     missing = [k for k in ("file", "rules") if k not in config]
     if missing:
         raise ValueError(f"{config_path} is missing required key(s): {', '.join(missing)}")
+    if "retries" in config and config["retries"] < 1:
+        raise ValueError(f"{config_path}: retries must be >= 1")
+    if "max_drop" in config and not 0 <= config["max_drop"] <= 1:
+        raise ValueError(f"{config_path}: max_drop must be between 0 and 1")
+    if "sample_rows" in config and config["sample_rows"] < 1:
+        raise ValueError(f"{config_path}: sample_rows must be >= 1")
+    if config.get("output"):
+        _check_output_path(config["output"])
     return config
 
 
@@ -225,10 +363,7 @@ def main():
     if args.max_cost_usd is not None and estimate_cost(1, 1) is None:
         print("WARNING: --max-cost-usd is set but GEMINI_PRICE_INPUT_PER_MTOK / "
               "GEMINI_PRICE_OUTPUT_PER_MTOK are not configured — budget guard is inactive.")
-    if args.file:
-        args.file = substitute_env_vars(args.file)
-    if args.rules:
-        args.rules = substitute_env_vars(args.rules)
+    _validate_cli(args, parser)
 
     # Apply configuration file fallbacks if provided
     if args.config:
@@ -237,6 +372,13 @@ def main():
         args.rules = config.get("rules", args.rules)
         args.retries = config.get("retries", args.retries)
         args.output = config.get("output", args.output)
+
+    # Expand {ENV_VAR} AFTER the merge so --config values expand too
+    # (CLI values get a harmless, idempotent second pass).
+    if args.file:
+        args.file = substitute_env_vars(args.file)
+    if args.rules:
+        args.rules = substitute_env_vars(args.rules)
 
     results = []
 
@@ -290,7 +432,20 @@ def main():
                 for cfg in configs_to_run
             }
             for future in as_completed(futures):
-                results.append(future.result())
+                name = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    # One dataset must never kill the batch or discard the
+                    # results its siblings already earned.
+                    print(f"❌ {name}: crashed ({type(e).__name__}: {e})")
+                    results.append({"file": name, "success": False, "attempts": 0,
+                                    "usage": {"calls": 0, "prompt_tokens": 0,
+                                              "completion_tokens": 0, "total_tokens": 0,
+                                              "cost_usd": None},
+                                    "budget_stopped": False,
+                                    "error": f"crashed: {type(e).__name__}: {e}",
+                                    "rows_in": 0, "rows_out": 0, "rows_dropped": 0})
     else:
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
@@ -299,18 +454,37 @@ def main():
         results.append(result)
 
     print("\n=== SUMMARY ===")
-    write_summary(results)
-    for r in results:
-        status = "✅ PASS" if r["success"] else "❌ FAIL"
-        print(f"{status}  {r['file']}  (attempts: {r['attempts']})")
+    failed = summarize_results(results)
+    inputs = "".join(sorted(f"{r['file']}:{r.get('error', '')}" for r in results))
+    run_id = hashlib.md5(inputs.encode()).hexdigest()[:8] + "-" + uuid.uuid4().hex[:8]
+    write_summary(results, run_id=run_id)
 
-    if any(not r["success"] for r in results):
-        failed = [r["file"] for r in results if not r["success"]]
+    if failed:
         with open("last_run_failures.txt", "w") as f:
             f.write("\n".join(failed))
     elif os.path.exists("last_run_failures.txt"):
         os.remove("last_run_failures.txt")  # clean up once things pass again
+    return 1 if failed else 0
+
+
+def summarize_results(results):
+    """Print per-dataset lines; return failed files. dry_run (success None)
+    reports SKIP and never counts as failure."""
+    failed = []
+    for r in results:
+        if r["success"] is None:
+            print(f"⏭ SKIP  {r['file']}  (dry-run, attempts: {r['attempts']})")
+        elif r["success"]:
+            extra = ""
+            if "rows_in" in r:
+                extra = f"  rows {r['rows_in']}→{r['rows_out']}"
+            print(f"✅ PASS  {r['file']}  (attempts: {r['attempts']}){extra}")
+        else:
+            reason = f" — {r['error']}" if r.get("error") else ""
+            print(f"❌ FAIL  {r['file']}  (attempts: {r['attempts']}){reason}")
+            failed.append(r["file"])
+    return failed
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

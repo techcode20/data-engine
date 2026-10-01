@@ -1,8 +1,10 @@
 import json
 import hashlib
 import os
+import threading
 
 CACHE_PATH = "schema_cache.json"
+_lock = threading.Lock()  # batch mode shares this file across worker threads
 
 def _is_url(path):
     return isinstance(path, str) and path.lower().startswith(("http://", "https://"))
@@ -47,8 +49,13 @@ def get_cached_schema(file_path, rules, content_fingerprint=None):
     return cache.get(key)
 
 def set_cached_schema(file_path, rules, schema_json, content_fingerprint=None):
-    cache = _load_cache()
-    key = _cache_key(file_path, rules, content_fingerprint)
-    cache[key] = schema_json
-    with open(CACHE_PATH, "w") as f:
-        json.dump(cache, f, indent=2)
+    with _lock:
+        cache = _load_cache()
+        key = _cache_key(file_path, rules, content_fingerprint)
+        cache[key] = schema_json
+        with open(CACHE_PATH, "w") as f:
+            json.dump(cache, f, indent=2)
+        try:
+            os.chmod(CACHE_PATH, 0o600)
+        except OSError:
+            pass

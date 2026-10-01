@@ -1,9 +1,11 @@
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 # Resolve .env next to this file, not CWD — invoking the engine from another
 # directory must not silently lose the API key.
@@ -13,6 +15,9 @@ MODEL_NAME = "gemini-3.1-flash-lite"  # verified live against the models.list AP
 
 MAX_API_RETRIES = 4
 BASE_DELAY_SECONDS = 2
+# Deterministic, bounded generation: temperature 0 for reproducibility,
+# capped output so one verbose dump cannot burn the budget.
+GENERATION_CONFIG = {"temperature": 0.0, "max_output_tokens": 2048}
 
 # Per-call usage records: {timestamp, model, purpose, tag, prompt_tokens,
 # completion_tokens, total_tokens}. `tag` (usually the dataset path) lets
@@ -44,24 +49,61 @@ def _record_usage(response, purpose: str, tag: str):
     })
 
 
+class EmptyResponseError(Exception):
+    """The model returned no usable text (empty / safety-blocked). Retryable."""
+
+
+def _llm_timeout_s() -> float:
+    try:
+        return float(os.getenv("GEMINI_TIMEOUT_S", "120"))
+    except ValueError:
+        return 120.0
+
+
+def _call_once(prompt: str, purpose: str, tag: str):
+    """Single API call with config knobs. Raises on transport OR empty text."""
+    import concurrent.futures as _fut  # local import keeps module import light
+    config = genai_types.GenerateContentConfig(**GENERATION_CONFIG)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _get_client().models.generate_content,
+            model=MODEL_NAME, contents=prompt, config=config,
+        )
+        try:
+            response = future.result(timeout=_llm_timeout_s())
+        except _fut.TimeoutError as e:
+            raise EmptyResponseError(
+                f"LLM call timed out after {_llm_timeout_s():g}s with no response"
+            ) from e
+    text = response.text or ""
+    if not text.strip():
+        raise EmptyResponseError("LLM returned empty text (blocked or blank response)")
+    _record_usage(response, purpose, tag)
+    return text
+
+
 def generate(prompt: str, purpose: str = "", tag: str = "") -> str:
     last_error = None
+    value_errors_seen = 0
     for attempt in range(1, MAX_API_RETRIES + 1):
         try:
-            response = _get_client().models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-            )
-            _record_usage(response, purpose, tag)
-            return response.text
+            return _call_once(prompt, purpose, tag)
         except genai_errors.APIError as e:
             last_error = e
             is_retryable = getattr(e, "code", None) in (429, 500, 503)
             if not is_retryable or attempt == MAX_API_RETRIES:
                 raise
-            delay = BASE_DELAY_SECONDS * (2 ** (attempt - 1))  # 2s, 4s, 8s...
-            print(f"Gemini API error ({e.code}), retrying in {delay}s (attempt {attempt}/{MAX_API_RETRIES})...")
-            time.sleep(delay)
+        except (EmptyResponseError, ValueError) as e:
+            # SDK ValueErrors (UnknownApiResponse et al.) and empty responses:
+            # retry briefly — the next call usually parses — then give up.
+            last_error = e
+            value_errors_seen += 1
+            if value_errors_seen >= 2 or attempt == MAX_API_RETRIES:
+                raise
+        delay = BASE_DELAY_SECONDS * (2 ** (attempt - 1))  # 2s, 4s, 8s...
+        code = getattr(last_error, "code", type(last_error).__name__)
+        print(f"Gemini error ({code}), retrying in {delay}s (attempt {attempt}/{MAX_API_RETRIES})...")
+        time.sleep(delay)
     raise last_error
 
 

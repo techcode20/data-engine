@@ -130,7 +130,19 @@ python bump_version.py "Short note for the changelog"
 8. **engine.py** — orchestrates all of the above in a self-correct loop (capped retries), handles CLI args, config files, env-var substitution, and batch/parallel execution
 9. **fix_memory.py** — logs every error + fix to `fix_log.jsonl`, and feeds recent fixes back into future code generation as prior experience (capped per error signature so prompts stay lean)
 10. **run_summary.py** / **trends.py** — record and report on run history over time
-11. **gemini_client.py** — the one place all Gemini API calls go through (model name, retry-with-backoff)
+11. **gemini_client.py** — the one place all Gemini API calls go through (deterministic config, timeout, retry-with-backoff, per-call usage metering)
+
+## Security model
+
+Generated code is untrusted input — treat it that way:
+
+- **Static gate** (`sandbox.py::gate_code`): imports, `open`/`eval`/`exec`/`getattr`, file/network `pd.read_*`/`df.to_*`, and dunder access are rejected *without executing anything*.
+- **Subprocess isolation**: approved code runs in a child process with a scrubbed environment (no `*API_KEY*/*SECRET*/*TOKEN*`), a foreign cwd, a kill-on-timeout (`SANDBOX_TIMEOUT_S`, default 120s), and POSIX memory/CPU caps where available (`SANDBOX_MAX_RSS_BYTES`, `SANDBOX_MAX_CPU_S`).
+- **Prompt hygiene**: inference samples are wrapped in `<DATA>` tags with an untrusted-data instruction, capped at 200 chars/cell, and scanned for instruction patterns (refuses loudly instead of sending).
+- **Leak discipline**: failure logs store error *shapes*, not cell values; only the live same-dataset fix prompt sees full values. State files are written owner-only (`0o600`).
+- **Exports**: CSV cells starting with `= + @ |` (and friends) are quote-prefixed against spreadsheet formula injection.
+- **Fetches**: non-public URL hosts are refused (`DATA_ALLOW_PRIVATE_HOSTS=1` bypasses for intranet demos); `..` in `--output` paths is rejected; CSV delimiter/encoding/headers are validated instead of guessed.
+- **Residual risks (documented, not hidden)**: no RAM cap on Windows (timeout is the guard); DNS-rebinding TOCTOU on the URL check; shared YAML configs can point `file:` anywhere (by design for a local CLI). For truly hostile sources, run inside a container.
 
 ## Config file format
 

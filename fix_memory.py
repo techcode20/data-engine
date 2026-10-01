@@ -1,12 +1,23 @@
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta
 
 LOG_PATH = "fix_log.jsonl"
 MAX_STORED_ENTRIES = 500  # hard cap on log file growth; oldest entries are dropped on write
 DEFAULT_MAX_AGE_DAYS = 90  # fixes older than this are not fed back into prompts
 DEFAULT_PER_SIGNATURE = 2  # newest fixes kept per distinct error signature
+
+_lock = threading.Lock()  # batch mode shares this file across worker threads
+
+
+def _restrict(path):
+    """Owner-only permissions: error text may contain data shapes + context."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _error_signature(error: str) -> str:
@@ -84,13 +95,21 @@ def log_fix(dataset_name, attempt_num, error, fixed_code):
         "error": str(error)[:1000],
         "fix": fixed_code,
     }
-    with open(LOG_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-    _enforce_cap()
+    with _lock:
+        with open(LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        _restrict(LOG_PATH)
+        _enforce_cap_locked()
 
 
 def _enforce_cap():
     """Keep the log file from growing without bound."""
+    with _lock:
+        _enforce_cap_locked()
+
+
+def _enforce_cap_locked():
+    """Caller must hold _lock (log_fix already does)."""
     try:
         with open(LOG_PATH, "r") as f:
             lines = [ln for ln in f if ln.strip()]
@@ -120,4 +139,5 @@ def prune_fix_log(max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> int:
     removed = sum(1 for _ in open(LOG_PATH) if _.strip()) - len(kept)
     with open(LOG_PATH, "w") as f:
         f.writelines(kept)
+    _restrict(LOG_PATH)
     return removed

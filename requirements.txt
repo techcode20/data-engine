@@ -1,10 +1,13 @@
-# Direct dependencies (mirrors pyproject.toml). Install with:
-#   pip install -r requirements.txt
-pandas
-pandera
-google-genai
-python-dotenv
-pyyaml
-requests
-pytest
-pytest-cov
+# Pinned direct dependencies. Regenerate with:
+#   pip freeze | grep -iE "^(pandas|pandera|google-genai|python-dotenv|pyyaml|requests|pytest|pytest-cov)=="
+# Install with: pip install -r requirements.txt
+# Audit with: pip-audit -r requirements.txt
+pandas==3.0.5
+pandera==0.33.1
+google-genai==2.24.0
+python-dotenv==1.2.3
+pyyaml==6.0.3
+requests==2.34.2
+pytest==9.1.1
+pytest-cov==7.1.0
+hypothesis==6.168.3

@@ -1,3 +1,6 @@
+## 0.3.0 - adversarial hardening
+Sandbox is now real (AST gate + subprocess isolation + timeout kill + scrubbed env). Crash-hardening across LLM, schema, and validate paths. Prompt-injection scanning, failure redaction, formula-safe exports, SSRF/output guards. Ingestion validates encoding/delimiters/headers/sizes and reads JSON Lines. Batch survives single-dataset crashes; exit codes, partial outputs, run IDs, row reconciliation, repeat-code detection. Pinned deps (pip-audit clean), hypothesis properties, 141 tests green.
+
 ## Milestones 1â€“5 â€” Core pipeline
 Ingest â†’ infer schema â†’ generate code â†’ sandbox execute â†’ validate, with a self-correct retry loop and automated pandera schema generation with business-rule checks.
 
@@ -34,6 +37,9 @@ Budget-guarded retries and deterministic pre-clean pass
 
 ## 0.2.3 — 2026-09-29
 Spend alerts for scheduled runs and opt-in smart pre-parsers
+
+## 0.3.0 - adversarial hardening
+Sandbox is now real (AST gate + subprocess isolation + timeout kill + scrubbed env). Crash-hardening across LLM, schema, and validate paths. Prompt-injection scanning, failure redaction, formula-safe exports, SSRF/output guards. Ingestion validates encoding/delimiters/headers/sizes and reads JSON Lines. Batch survives single-dataset crashes; exit codes, partial outputs, run IDs, row reconciliation, repeat-code detection. Pinned deps (pip-audit clean), hypothesis properties, 141 tests green.
 
 ## 0.2.4 — 2026-09-29
 Static HTML dashboard for run history

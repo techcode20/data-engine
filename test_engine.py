@@ -1,7 +1,19 @@
 from unittest.mock import patch
 import os
 import pandas as pd
+import pytest
 from engine import process_one
+
+import code_cache
+import schema_cache
+
+
+@pytest.fixture(autouse=True)
+def _isolated_caches(tmp_path, monkeypatch):
+    """Hermetic caches: never read/write the developer's real cache files."""
+    monkeypatch.setattr(code_cache, "CODE_CACHE_PATH", str(tmp_path / "code_cache.json"))
+    monkeypatch.setattr(schema_cache, "CACHE_PATH", str(tmp_path / "schema_cache.json"))
+
 
 def _write_temp_csv(tmp_path, content):
     p = tmp_path / "test_data.csv"
@@ -22,17 +34,36 @@ def test_process_one_succeeds_first_try(mock_schema_gen, mock_code_gen, tmp_path
 
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
-def test_process_one_gives_up_after_max_retries(mock_schema_gen, mock_code_gen, tmp_path):
+def test_process_one_stops_when_model_repeats_itself(mock_schema_gen, mock_code_gen, tmp_path):
+    # The model returns byte-identical code for the fix: retrying is pointless,
+    # so the loop must stop early instead of burning all retries (A12).
     csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n")
     mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
-    # code that will always fail validation no matter how many times we "fix" it
     mock_code_gen.return_value = "def clean(df):\n    return df"  # id stays a string, never becomes int
 
-    result = process_one(csv_path, "id must be an integer", retries=2, output_path=None)
+    result = process_one(csv_path, "id must be an integer", retries=5, output_path=None)
 
     assert result["success"] is False
+    assert result["attempts"] == 1
+    assert mock_code_gen.call_count == 2  # 1 generate + 1 fix, then repeat detected
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_process_one_succeeds_on_retry(mock_schema_gen, mock_code_gen, tmp_path):
+    # Attempt 1 fails validation; the fix (different code) passes on attempt 2.
+    csv_path = _write_temp_csv(tmp_path, "id,name\n1,Alice\n")
+    mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
+    mock_code_gen.side_effect = [
+        "def clean(df):\n    return df",  # attempt 1: id stays a string -> fail
+        "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df",  # fixed
+    ]
+
+    result = process_one(csv_path, "id must be an integer", retries=3, output_path=None)
+
+    assert result["success"] is True
     assert result["attempts"] == 2
-    assert mock_code_gen.call_count == 3  # 1 initial generation + 1 fix per failed attempt (2 attempts)
+    assert mock_code_gen.call_count == 2
+    assert result["rows_in"] == 1 and result["rows_out"] == 1
 
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
@@ -51,16 +82,20 @@ def test_process_one_strict_stops_after_first_failure(mock_schema_gen, mock_code
 @patch("schema_inference.generate")
 def test_process_one_retries_on_sanity_failure(mock_schema_gen, mock_code_gen, tmp_path):
     # Schema passes (id becomes int) but the cleaner drops 4/5 rows -> sanity
-    # failure must feed the retry loop like a validation failure.
+    # failure must feed the retry loop like a validation failure. The two
+    # attempts use DIFFERENT code so change-detection does not stop the loop.
     csv_path = _write_temp_csv(tmp_path, "id\n1\n2\n3\n4\n5\n")
     mock_schema_gen.return_value = '{"id": {"type": "int", "nullable": false}}'
-    mock_code_gen.return_value = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df.iloc[:1]"
+    mock_code_gen.side_effect = [
+        "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df.iloc[:1]  # v1",
+        "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df.iloc[:1]  # v2",
+    ]
 
     result = process_one(csv_path, "id must be an integer", retries=2, output_path=None)
 
     assert result["success"] is False
     assert result["attempts"] == 2
-    assert mock_code_gen.call_count == 3
+    assert mock_code_gen.call_count == 2  # 1 generate + 1 fix; no fix after the final attempt
 
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
