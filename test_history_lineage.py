@@ -43,6 +43,16 @@ def test_history_entries_carry_input_hash(tmp_path, monkeypatch):
     assert second["input_hash"] != h1
 
 
+def test_input_hash_distinguishes_rules_over_same_data(tmp_path):
+    from engine import _input_hash
+
+    p = tmp_path / "a.csv"
+    p.write_text("id\n1\n")
+    same_data_a = _input_hash(str(p), "id must be an integer")
+    same_data_b = _input_hash(str(p), "id must be unique")
+    assert same_data_a != same_data_b  # rules are part of expectations
+
+
 def test_trends_does_not_count_skips_as_failures():
     history = [{
         "timestamp": "t",

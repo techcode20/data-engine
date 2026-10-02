@@ -41,6 +41,33 @@ def esc(v):
     return html.escape(str(v), quote=True)
 
 
+def summarize(history):
+    """Aggregate health metrics. Dry-run SKIP entries (success is None) are
+    excluded from every count — they never executed, so they are neither
+    passes nor failures."""
+    executed = [x for r in history for x in r.get("results", []) if x.get("success") is not None]
+    total_results = len(executed)
+    passes = sum(1 for x in executed if x.get("success"))
+    total_tokens = sum(x.get("usage", {}).get("total_tokens", 0) for x in executed)
+    pass_rate = (passes / total_results * 100) if total_results else 0
+
+    per_ds = {}
+    for x in executed:
+        s = per_ds.setdefault(x["file"], {"runs": 0, "pass": 0, "att": 0, "tok": 0, "fail": 0})
+        s["runs"] += 1
+        s["pass"] += 1 if x.get("success") else 0
+        s["fail"] += 0 if x.get("success") else 1
+        s["att"] += x.get("attempts", 0)
+        s["tok"] += x.get("usage", {}).get("total_tokens", 0)
+    return {
+        "total_results": total_results,
+        "passes": passes,
+        "total_tokens": total_tokens,
+        "pass_rate": pass_rate,
+        "per_ds": per_ds,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "dashboard.html"))
@@ -49,23 +76,12 @@ def main():
     history = load_json("run_summary.json", [])
     fixes = load_fix_log()
 
-    executed = [x for r in history for x in r.get("results", []) if x.get("success") is not None]
-    total_results = len(executed)
-    passes = sum(1 for x in executed if x.get("success"))
-    total_tokens = sum(x.get("usage", {}).get("total_tokens", 0) for x in executed)
-    pass_rate = (passes / total_results * 100) if total_results else 0
-
-    per_ds = {}
-    for run in history:
-        for x in run.get("results", []):
-            if x.get("success") is None:
-                continue  # dry-run SKIP: never executed, never a failure
-            s = per_ds.setdefault(x["file"], {"runs": 0, "pass": 0, "att": 0, "tok": 0, "fail": 0})
-            s["runs"] += 1
-            s["pass"] += 1 if x.get("success") else 0
-            s["fail"] += 0 if x.get("success") else 1
-            s["att"] += x.get("attempts", 0)
-            s["tok"] += x.get("usage", {}).get("total_tokens", 0)
+    stats = summarize(history)
+    total_results = stats["total_results"]
+    passes = stats["passes"]
+    total_tokens = stats["total_tokens"]
+    pass_rate = stats["pass_rate"]
+    per_ds = stats["per_ds"]
 
     max_runs = max([s["runs"] for s in per_ds.values()] or [1])
     ds_rows = []

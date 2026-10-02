@@ -5,6 +5,28 @@ import sys
 import dashboard
 
 
+def test_summarize_excludes_dry_run_skips():
+    history = [{
+        "timestamp": "t",
+        "results": [
+            {"file": "a.csv", "success": True, "attempts": 1,
+             "usage": {"total_tokens": 100}},
+            {"file": "b.csv", "success": False, "attempts": 5,
+             "usage": {"total_tokens": 200}},
+            {"file": "c.csv", "success": None, "attempts": 0,
+             "usage": {"total_tokens": 50}},
+        ],
+    }]
+    stats = dashboard.summarize(history)
+    assert stats["total_results"] == 2
+    assert stats["passes"] == 1
+    assert stats["pass_rate"] == 50.0
+    assert stats["total_tokens"] == 300
+    assert set(stats["per_ds"]) == {"a.csv", "b.csv"}
+    assert stats["per_ds"]["a.csv"]["fail"] == 0
+    assert stats["per_ds"]["b.csv"]["fail"] == 1
+
+
 def test_load_json_missing_returns_default(tmp_path):
     assert dashboard.load_json("does-not-exist.json", {"x": 1}) == {"x": 1}
 
