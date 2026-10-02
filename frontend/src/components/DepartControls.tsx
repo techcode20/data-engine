@@ -1,4 +1,4 @@
-import { OctagonX, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { Hourglass, OctagonX, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { whistle } from "../lib/sound";
 import { useTransit } from "../store";
 import type { Speed } from "../simulation/types";
@@ -17,6 +17,8 @@ export function DepartControls() {
   const setSpeed = useTransit((s) => s.setSpeed);
   const sound = useTransit((s) => s.sound);
   const setSound = useTransit((s) => s.setSound);
+  const chaosStall = useTransit((s) => s.chaosStall);
+  const setChaosStall = useTransit((s) => s.setChaosStall);
 
   const go = () => {
     if (sound) whistle();
@@ -90,6 +92,15 @@ export function DepartControls() {
           className={`rounded-xl border-[3px] border-[#141210] p-2.5 shadow-[3px_3px_0_#141210] transition active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${sound ? "bg-[#f59e0b]" : "bg-[#fffdf6]"}`}
         >
           {sound ? <Volume2 size={16} /> : <VolumeX size={16} />}
+        </button>
+        <button
+          onClick={() => setChaosStall(!chaosStall)}
+          aria-pressed={chaosStall}
+          aria-label={chaosStall ? "Disable stall simulation" : "Simulate sandbox stall"}
+          title="Chaos switch: stall attempt 1 in the sandbox (timeout state demo)"
+          className={`rounded-xl border-[3px] border-[#141210] p-2.5 shadow-[3px_3px_0_#141210] transition active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${chaosStall ? "bg-[#e3342f] text-white" : "bg-[#fffdf6]"}`}
+        >
+          <Hourglass size={16} />
         </button>
       </div>
       <div className="mt-3">

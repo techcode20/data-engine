@@ -62,6 +62,7 @@ function saveSnapshot(s: TransitState) {
         speed: s.speed,
         viewingVersion: s.viewingVersion,
         latestVersion: s.latestVersion,
+        chaosStall: s.chaosStall,
       }),
     );
   } catch {
@@ -113,6 +114,7 @@ interface TransitState {
   sound: boolean;
   follow: boolean;
   mobile: boolean;
+  chaosStall: boolean;
   selectedStation: StationId | null;
   selectedCarriage: number | null;
   logFilter: string;
@@ -127,6 +129,7 @@ interface TransitState {
   reset: () => void;
   setSpeed: (s: Speed) => void;
   setSound: (b: boolean) => void;
+  setChaosStall: (b: boolean) => void;
   setFollow: (b: boolean) => void;
   setMobile: (m: boolean) => void;
   selectStation: (id: StationId | null) => void;
@@ -204,6 +207,7 @@ export const useTransit = create<TransitState>()((set, get) => {
   sound: false,
   follow: false,
   mobile: false,
+  chaosStall: restored?.chaosStall ?? false,
   selectedStation: null,
   selectedCarriage: null,
   logFilter: "ALL",
@@ -260,6 +264,7 @@ export const useTransit = create<TransitState>()((set, get) => {
     e.stop();
     e.setSpeed(get().speed);
     e.setMobile(get().mobile);
+    e.setChaosStall(get().chaosStall);
     e.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     logSeq = 0;
     const mem = baseMemory();
@@ -375,6 +380,7 @@ export const useTransit = create<TransitState>()((set, get) => {
     engine?.setSpeed(s);
   },
   setSound: (b) => set({ sound: b }),
+  setChaosStall: (b) => set({ chaosStall: b }),
   setFollow: (b) => set({ follow: b }),
   setMobile: (m) => {
     if (get().mobile !== m) {

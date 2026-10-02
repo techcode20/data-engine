@@ -1,6 +1,7 @@
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
@@ -29,10 +30,19 @@ _client = None
 
 
 def _get_client():
-    """Lazy client: importing this module (e.g. in CI without keys) must not crash."""
+    """Lazy client: importing this module (e.g. in CI without keys) must not crash.
+
+    The HTTP timeout is enforced INSIDE the SDK (httpx deadline), not just by
+    the wrapper future: exiting a ThreadPoolExecutor context waits for its
+    tasks, so a wrapper-only timeout reports on time while the process stays
+    blocked. The wrapper below is only a backstop with a margin on top.
+    """
     global _client
     if _client is None:
-        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        _client = genai.Client(
+            api_key=os.getenv("GEMINI_API_KEY"),
+            http_options={"timeout": _llm_timeout_s()},
+        )
     return _client
 
 
@@ -60,20 +70,29 @@ def _llm_timeout_s() -> float:
         return 120.0
 
 
+def _is_timeout(err: BaseException) -> bool:
+    """True for socket/future timeouts regardless of which layer raised them."""
+    return "timeout" in type(err).__name__.lower() or "timed out" in str(err).lower()
+
+
 def _call_once(prompt: str, purpose: str, tag: str):
     """Single API call with config knobs. Raises on transport OR empty text."""
     import concurrent.futures as _fut  # local import keeps module import light
     config = genai_types.GenerateContentConfig(**GENERATION_CONFIG)
+    # Backstop only: the real deadline is the SDK http_options timeout above,
+    # so by the time this future resolves the `with` exit cannot block on a
+    # hung socket. Margin on top keeps the wrapper from racing it.
+    deadline = _llm_timeout_s() + 30
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             _get_client().models.generate_content,
             model=MODEL_NAME, contents=prompt, config=config,
         )
         try:
-            response = future.result(timeout=_llm_timeout_s())
+            response = future.result(timeout=deadline)
         except _fut.TimeoutError as e:
             raise EmptyResponseError(
-                f"LLM call timed out after {_llm_timeout_s():g}s with no response"
+                f"LLM call timed out after {deadline:g}s with no response"
             ) from e
     text = response.text or ""
     if not text.strip():
@@ -90,8 +109,13 @@ def generate(prompt: str, purpose: str = "", tag: str = "") -> str:
             return _call_once(prompt, purpose, tag)
         except genai_errors.APIError as e:
             last_error = e
-            is_retryable = getattr(e, "code", None) in (429, 500, 503)
+            is_retryable = getattr(e, "code", None) in (429, 500, 503) or _is_timeout(e)
             if not is_retryable or attempt == MAX_API_RETRIES:
+                raise
+        except FuturesTimeoutError as e:
+            # Wrapper backstop fired (the SDK deadline should have fired first).
+            last_error = e
+            if attempt == MAX_API_RETRIES:
                 raise
         except (EmptyResponseError, ValueError) as e:
             # SDK ValueErrors (UnknownApiResponse et al.) and empty responses:

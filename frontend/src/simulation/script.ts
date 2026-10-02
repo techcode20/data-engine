@@ -104,6 +104,26 @@ export const CODE_V3 = `def clean(df):
 
 export const CODE_VERSIONS = [CODE_V1, CODE_V2, CODE_V3];
 
+/** Opt-in chaos path: attempt 1 stalls in the sandbox instead of failing validation. */
+export const CHAOS_ERROR =
+  "SandboxTimeout: clean() exceeded its kill budget and was terminated (simulated stall).";
+export const CHAOS_DISRUPTION =
+  "Signal fault at Sandbox Terminal — the worker stalled past its kill budget.";
+export const CHAOS_ALERT =
+  "Major delay at Sandbox Terminal: clean() stalled and was terminated by the kill budget. Crew is refitting with a timeout guard — expect timetable v2 shortly.";
+export const CHAOS_MEMORY = {
+  nodes: [
+    {
+      id: "err-stall",
+      kind: "error",
+      label: "sandbox stall",
+      detail: "clean() exceeded its kill budget; terminated with no frame to validate",
+      dataset: "ridership_customers_messy.csv",
+    },
+  ],
+  links: [{ source: "err-stall", target: "ds-ridership", label: "seen-in" }],
+} as { nodes: MemoryNode[]; links: MemoryLink[] };
+
 const BASE_MEMORY: { nodes: MemoryNode[]; links: MemoryLink[] } = {
   nodes: [
     { id: "ds-ridership", kind: "dataset", label: "ridership_customers", detail: "8 rows · 7 cols · CSV", dataset: "ridership_customers_messy.csv" },

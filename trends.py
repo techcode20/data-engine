@@ -23,6 +23,8 @@ def summarize_by_dataset(history):
     stats = defaultdict(lambda: {"runs": 0, "passes": 0, "total_attempts": 0, "total_tokens": 0})
     for run in history:
         for result in run["results"]:
+            if result.get("success") is None:
+                continue  # dry-run SKIP: never executed, never a failure
             s = stats[result["file"]]
             s["runs"] += 1
             s["passes"] += 1 if result["success"] else 0
@@ -38,7 +40,7 @@ def last_run_spend(history):
     tokens = sum(r.get("usage", {}).get("total_tokens", 0) for r in results)
     costs = [r.get("usage", {}).get("cost_usd") for r in results]
     cost = sum(c for c in costs if c is not None) if any(c is not None for c in costs) else None
-    failures = [r["file"] for r in results if not r["success"]]
+    failures = [r["file"] for r in results if r.get("success") is False]
     return tokens, cost, failures
 
 def print_report(stats):

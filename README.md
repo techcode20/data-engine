@@ -142,7 +142,8 @@ Generated code is untrusted input — treat it that way:
 - **Leak discipline**: failure logs store error *shapes*, not cell values; only the live same-dataset fix prompt sees full values. State files are written owner-only (`0o600`).
 - **Exports**: CSV cells starting with `= + @ |` (and friends) are quote-prefixed against spreadsheet formula injection.
 - **Fetches**: non-public URL hosts are refused (`DATA_ALLOW_PRIVATE_HOSTS=1` bypasses for intranet demos); `..` in `--output` paths is rejected; CSV delimiter/encoding/headers are validated instead of guessed.
-- **Residual risks (documented, not hidden)**: no RAM cap on Windows (timeout is the guard); DNS-rebinding TOCTOU on the URL check; shared YAML configs can point `file:` anywhere (by design for a local CLI). For truly hostile sources, run inside a container.
+- **Residual risks (documented, not hidden)**: no RAM cap on Windows (timeout is the guard); DNS-rebinding TOCTOU on the URL check; shared YAML configs can point `file:` anywhere (by design for a local CLI).
+- **Trust boundary (read this before exposing the engine)**: the AST gate + subprocess sandbox are *risk reduction*, not a strong security boundary — generated Python still runs on the same machine and filesystem (it can read local files the gate doesn't block and exfiltrate via the returned frame). Treat hostile datasets like hostile input: keep them in an OS-level container or equivalent isolation. The `Dockerfile` exists for exactly this: run untrusted sources with `--network none` and a read-only mount for inputs, e.g. `docker run --rm --network none -v %cd%/in:/app/in:ro -v %cd%/out:/app/out ...`. Do not put this CLI behind a network service without that layer.
 
 ## Config file format
 

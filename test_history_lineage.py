@@ -13,15 +13,34 @@ from trends import summarize_by_dataset
 
 def test_history_entries_carry_input_hash(tmp_path, monkeypatch):
     import run_summary
+    import code_cache
+    import schema_cache
+    from unittest.mock import patch
+    from engine import process_one
 
     monkeypatch.setattr(run_summary, "SUMMARY_PATH", str(tmp_path / "run_summary.json"))
-    write_summary(
-        [{"file": "a.csv", "success": True, "attempts": 1}],
-        run_id="abc123",
-    )
+    monkeypatch.setattr(code_cache, "CODE_CACHE_PATH", str(tmp_path / "cc.json"))
+    monkeypatch.setattr(schema_cache, "CACHE_PATH", str(tmp_path / "sc.json"))
+    p = tmp_path / "a.csv"
+    p.write_text("id\n1\n")
+    schema = '{"id": {"type": "int"}}'
+    code = "def clean(df):\n    df['id'] = df['id'].astype(int)\n    return df"
+    with patch("code_gen.generate", return_value=code), \
+         patch("schema_inference.generate", return_value=schema):
+        first = process_one(str(p), "id int", retries=1, output_path=None)
+    assert first["success"] is True
+    write_summary([first], run_id="abc123")
     entry = json.loads((tmp_path / "run_summary.json").read_text())[0]
     assert entry["run_id"] == "abc123"
-    assert entry.get("input_hash"), "no content fingerprint — reruns are indistinguishable"
+    h1 = entry["results"][0].get("input_hash")
+    assert h1, "no content fingerprint — reruns are indistinguishable"
+
+    # Same path+rules over CHANGED content must hash differently.
+    p.write_text("id\n1\n2\n")
+    with patch("code_gen.generate", return_value=code), \
+         patch("schema_inference.generate", return_value=schema):
+        second = process_one(str(p), "id int", retries=1, output_path=None)
+    assert second["input_hash"] != h1
 
 
 def test_trends_does_not_count_skips_as_failures():

@@ -43,3 +43,6 @@ Sandbox is now real (AST gate + subprocess isolation + timeout kill + scrubbed e
 
 ## 0.2.4 — 2026-09-29
 Static HTML dashboard for run history
+
+## 0.3.1 — 2026-10-02
+Input lineage, trends SKIP fix, redirect auth boundary, full-config parity, genuine LLM deadlines, chaos stall demo, DOMPurify

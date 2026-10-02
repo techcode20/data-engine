@@ -2,7 +2,7 @@ import gsap from "gsap";
 import { MotionPathPlugin } from "gsap/MotionPathPlugin";
 import { ROUTES, archivePoints, repairLoopPoints, routePoints } from "../transit/mapConfig";
 import type { Pt } from "../transit/mapConfig";
-import { ATTEMPTS, snapshotForAttempt } from "./script";
+import { ATTEMPTS, CHAOS_ALERT, CHAOS_DISRUPTION, CHAOS_ERROR, CHAOS_MEMORY, snapshotForAttempt } from "./script";
 import type { AttemptScript, EngineEvent, Speed, StageStatus } from "./types";
 
 gsap.registerPlugin(MotionPathPlugin);
@@ -46,6 +46,7 @@ export class TransitEngine {
   private tls: Array<gsap.core.Timeline | undefined> = [];
   private speed: Speed = 1;
   private testScale: number | null = null;
+  private chaosStall = false;
   private reduced = false;
   private mobile = false;
   private playingAttempt = 0;
@@ -67,6 +68,11 @@ export class TransitEngine {
   setSpeed(s: Speed) {
     this.speed = s;
     for (const tl of this.tls) tl?.timeScale(this.effectiveScale());
+  }
+
+  /** Opt-in chaos: attempt 1 stalls in the sandbox (timeout state demo). */
+  setChaosStall(on: boolean) {
+    this.chaosStall = on;
   }
 
   /** Test hook: run timelines at arbitrary scale (headless simcheck). */
@@ -212,54 +218,79 @@ export class TransitEngine {
     const legDur = n === 1 ? [1.1, 1.1, 1.2, 1.2] : [0.9, 0.9, 1.0, 1.0];
     const stageForLeg = ["intake", "schema", "code", "sandbox"] as const;
     const dwell = 0.45;
+    const stalled = this.chaosStall && n === 1;
 
     stageForLeg.forEach((stage, i) => {
       call({ type: "stage", id: stage, status: "running" });
       call({ type: "board", next: STAGE_LABEL[stage], status: "ON TIME" });
       this.ride(tl, this.trainEl, mainPath, fracs[i], fracs[i + 1], legDur[i], true);
-      call({ type: "stage", id: stage, status: "passed", durationMs: Math.round(legDur[i] * 1000) });
+      if (stalled && stage === "sandbox") {
+        // Chaos path: the worker hangs, the kill budget fires, and there is
+        // no frame to validate — straight to self-correct, skipping validation.
+        call({ type: "stage", id: stage, status: "timeout", durationMs: Math.round(legDur[i] * 1000) });
+        call({ type: "error", text: CHAOS_ERROR });
+        call({ type: "disruption", on: true, label: CHAOS_DISRUPTION });
+        call({ type: "board", next: "Sandbox Terminal", status: "DELAYED" });
+        call({ type: "alert", text: CHAOS_ALERT });
+      } else {
+        call({ type: "stage", id: stage, status: "passed", durationMs: Math.round(legDur[i] * 1000) });
+      }
       tl.to({}, { duration: dwell });
     });
 
-    call({ type: "stage", id: "validation", status: "running" });
-    call({ type: "board", next: "Validation Gate", status: "ON TIME" });
-    tl.to({}, { duration: 1.0 });
-    call({ type: "checks", items: attempt.checks });
-    call({ type: "score", value: attempt.score });
-
-    if (attempt.errorFedBack) {
-      call({ type: "stage", id: "validation", status: "failed", durationMs: 1600 });
-      call({ type: "error", text: attempt.errorFedBack });
-      call({ type: "disruption", on: true, label: attempt.disruption ?? undefined });
-      call({ type: "board", next: "Validation Gate", status: "DELAYED" });
-      call({ type: "alert", text: attempt.alert });
-      call({ type: "carriages", states: [...attempt.carriages] });
-      this.shuntCars(tl);
+    if (stalled) {
+      call({ type: "carriages", states: ["dirty", "dirty", "dirty", "dirty"] });
       call({ type: "stage", id: "repair", status: "running" });
       call({ type: "board", next: "Repair Depot", status: "REROUTING" });
       call({ type: "crew", visible: true });
-      this.ride(tl, this.crewEl, this.pathEl("pf-route-repair"), 0, 1, n === 1 ? 2.2 : 1.6, false);
-      if (n === 2) call({ type: "reroute", on: true });
+      this.ride(tl, this.crewEl, this.pathEl("pf-route-repair"), 0, 1, 1.8, false);
       call({ type: "crew", visible: false });
       call({ type: "stage", id: "repair", status: "passed", durationMs: 1500 });
       call({ type: "stage", id: "archive", status: "running" });
       tl.to({}, { duration: 0.7 });
-      call({ type: "memory-add", nodes: attempt.newMemory.nodes, links: attempt.newMemory.links });
+      call({ type: "memory-add", nodes: CHAOS_MEMORY.nodes, links: CHAOS_MEMORY.links });
       call({ type: "stage", id: "archive", status: "passed", durationMs: 900 });
     } else {
-      call({ type: "stage", id: "validation", status: "passed", durationMs: 1600 });
-      call({ type: "error", text: null });
-      call({ type: "board", next: "Archive Terminus", status: "ON TIME" });
-      call({ type: "carriages", states: [...attempt.carriages] });
-      call({ type: "stage", id: "repair", status: "passed", durationMs: 300 });
-      call({ type: "stage", id: "archive", status: "running" });
-      tl.to({}, { duration: 0.7 });
-      call({ type: "memory-add", nodes: attempt.newMemory.nodes, links: attempt.newMemory.links });
-      call({ type: "stage", id: "archive", status: "passed", durationMs: 900 });
-      this.ride(tl, this.trainEl, this.pathEl("pf-route-archive"), 0, 1, 2.4, true);
-      call({ type: "board", next: "Archive Terminus", status: "ALL SERVICES RESTORED" });
-      call({ type: "alert", text: attempt.alert });
-      call({ type: "tickets" });
+      call({ type: "stage", id: "validation", status: "running" });
+      call({ type: "board", next: "Validation Gate", status: "ON TIME" });
+      tl.to({}, { duration: 1.0 });
+      call({ type: "checks", items: attempt.checks });
+      call({ type: "score", value: attempt.score });
+
+      if (attempt.errorFedBack) {
+        call({ type: "stage", id: "validation", status: "failed", durationMs: 1600 });
+        call({ type: "error", text: attempt.errorFedBack });
+        call({ type: "disruption", on: true, label: attempt.disruption ?? undefined });
+        call({ type: "board", next: "Validation Gate", status: "DELAYED" });
+        call({ type: "alert", text: attempt.alert });
+        call({ type: "carriages", states: [...attempt.carriages] });
+        this.shuntCars(tl);
+        call({ type: "stage", id: "repair", status: "running" });
+        call({ type: "board", next: "Repair Depot", status: "REROUTING" });
+        call({ type: "crew", visible: true });
+        this.ride(tl, this.crewEl, this.pathEl("pf-route-repair"), 0, 1, n === 1 ? 2.2 : 1.6, false);
+        if (n === 2) call({ type: "reroute", on: true });
+        call({ type: "crew", visible: false });
+        call({ type: "stage", id: "repair", status: "passed", durationMs: 1500 });
+        call({ type: "stage", id: "archive", status: "running" });
+        tl.to({}, { duration: 0.7 });
+        call({ type: "memory-add", nodes: attempt.newMemory.nodes, links: attempt.newMemory.links });
+        call({ type: "stage", id: "archive", status: "passed", durationMs: 900 });
+      } else {
+        call({ type: "stage", id: "validation", status: "passed", durationMs: 1600 });
+        call({ type: "error", text: null });
+        call({ type: "board", next: "Archive Terminus", status: "ON TIME" });
+        call({ type: "carriages", states: [...attempt.carriages] });
+        call({ type: "stage", id: "repair", status: "passed", durationMs: 300 });
+        call({ type: "stage", id: "archive", status: "running" });
+        tl.to({}, { duration: 0.7 });
+        call({ type: "memory-add", nodes: attempt.newMemory.nodes, links: attempt.newMemory.links });
+        call({ type: "stage", id: "archive", status: "passed", durationMs: 900 });
+        this.ride(tl, this.trainEl, this.pathEl("pf-route-archive"), 0, 1, 2.4, true);
+        call({ type: "board", next: "Archive Terminus", status: "ALL SERVICES RESTORED" });
+        call({ type: "alert", text: attempt.alert });
+        call({ type: "tickets" });
+      }
     }
 
     // Distribute the attempt's log lines evenly across the finished timeline.

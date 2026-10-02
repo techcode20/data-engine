@@ -56,3 +56,57 @@ def test_estimate_cost_math_with_rates():
     with patch.dict(os.environ, {"GEMINI_PRICE_INPUT_PER_MTOK": "2.0",
                                  "GEMINI_PRICE_OUTPUT_PER_MTOK": "8.0"}):
         assert gc.estimate_cost(1_000_000, 500_000) == 6.0
+
+
+def test_client_gets_sdk_http_timeout():
+    gc._client = None
+    with patch.dict(os.environ, {"GEMINI_TIMEOUT_S": "42"}):
+        with patch.object(gc.genai, "Client") as mock_client:
+            mock_client.return_value.models.generate_content.return_value = SimpleNamespace(
+                text="hi",
+                usage_metadata=SimpleNamespace(prompt_token_count=1,
+                                               candidates_token_count=1,
+                                               total_token_count=2),
+            )
+            assert gc.generate("hello") == "hi"
+            _, kwargs = mock_client.call_args
+            assert kwargs["http_options"] == {"timeout": 42.0}
+    gc._client = None
+
+
+def test_socket_timeout_is_retried_then_raises():
+    import concurrent.futures as fut
+
+    calls = []
+
+    def flaky(prompt, purpose="", tag=""):
+        calls.append(prompt)
+        if len(calls) < 3:
+            raise fut.TimeoutError("socket timed out")
+        return "recovered"
+
+    with patch.object(gc, "_call_once", side_effect=flaky):
+        with patch.object(gc.time, "sleep", return_value=None):
+            assert gc.generate("hello") == "recovered"
+    assert len(calls) == 3
+
+
+def test_is_timeout_matches_layer_variants():
+    class FakeSocketTimeout(Exception):
+        pass
+
+    assert gc._is_timeout(FakeSocketTimeout("socket timed out")) is True
+    assert gc._is_timeout(TimeoutError("operation timed out")) is True
+    assert gc._is_timeout(ValueError("bad request")) is False
+
+
+def test_socket_timeout_gives_up_at_retry_cap():
+    import concurrent.futures as fut
+
+    with patch.object(gc, "_call_once", side_effect=fut.TimeoutError("socket timed out")):
+        with patch.object(gc.time, "sleep", return_value=None):
+            try:
+                gc.generate("hello")
+            except fut.TimeoutError:
+                return
+    raise AssertionError("expected the timeout to propagate after retries")

@@ -31,14 +31,47 @@ def _ensure_public_url(url: str):
         if not ip.is_global:
             raise ValueError(f"refusing non-public URL host {host} ({ip})")
 
-def fetch_paginated_json(url: str, max_pages: int = 10, headers: dict = None) -> list:
+def _session_get(url: str, headers: dict = None, auth_host: str | None = None,
+                 max_redirects: int = 5):
+    """GET with manual redirect handling.
+
+    requests' automatic redirects would carry the tripwire check past the
+    first hop and could forward the Authorization header to another host.
+    Here every hop is re-validated as public, and the bearer token only goes
+    to the originally approved host. `auth_host=None` preserves the legacy
+    behavior (headers verbatim) for direct/internal callers.
+    """
+    headers = dict(headers or {})
+    current = url
+    for _ in range(max_redirects + 1):
+        _ensure_public_url(current)
+        host = urlparse(current).hostname or ""
+        hop_headers = {k: v for k, v in headers.items()
+                       if k.lower() != "authorization" or auth_host is None or host == auth_host}
+        response = requests.get(current, headers=hop_headers or None, timeout=10,
+                                allow_redirects=False)
+        code = getattr(response, "status_code", 200)
+        location = ""
+        try:
+            location = (response.headers or {}).get("location", "")
+        except Exception:
+            pass
+        if isinstance(code, int) and 300 <= code < 400 and location:
+            from urllib.parse import urljoin
+            current = urljoin(current, location)
+            continue
+        return response
+    raise ValueError(f"too many redirects (>{max_redirects}) starting at {url}")
+
+def fetch_paginated_json(url: str, max_pages: int = 10, headers: dict = None,
+                         auth_host: str | None = None) -> list:
     """Follow rel="next" links (the standard Link header pagination pattern) until there are no more pages or max_pages is hit."""
     all_data = []
     next_url = url
     page_count = 0
 
     while next_url and page_count < max_pages:
-        response = requests.get(next_url, headers=headers, timeout=10)
+        response = _session_get(next_url, headers=headers, auth_host=auth_host)
         response.raise_for_status()
         page_data = response.json()
 
@@ -55,7 +88,8 @@ def fetch_paginated_json(url: str, max_pages: int = 10, headers: dict = None) ->
     print(f"Fetched {page_count} page(s), {len(all_data)} total records")
     return all_data
 
-def fetch_paginated_json_by_page_param(url: str, max_pages: int = 10, headers: dict = None) -> list:
+def fetch_paginated_json_by_page_param(url: str, max_pages: int = 10, headers: dict = None,
+                                         auth_host: str | None = None) -> list:
     """For APIs with no Link header — increments a `page` query param until the response is empty."""
     all_data = []
     page = 1
@@ -63,7 +97,7 @@ def fetch_paginated_json_by_page_param(url: str, max_pages: int = 10, headers: d
     while page <= max_pages:
         separator = "&" if "?" in url else "?"
         page_url = f"{url}{separator}page={page}"
-        response = requests.get(page_url, headers=headers, timeout=10)
+        response = _session_get(page_url, headers=headers, auth_host=auth_host)
         response.raise_for_status()
         payload = response.json()
 
@@ -81,20 +115,22 @@ def fetch_paginated_json_by_page_param(url: str, max_pages: int = 10, headers: d
     print(f"Fetched {page - 1} page(s), {len(all_data)} total records")
     return all_data
 
-def fetch_paginated_json_auto(url: str, max_pages: int = 10, headers: dict = None) -> list:
+def fetch_paginated_json_auto(url: str, max_pages: int = 10, headers: dict = None,
+                              auth_host: str | None = None) -> list:
     """Try Link-header pagination first; if page 1 has no next link, fall back to page-param style."""
-    response = requests.get(url, headers=headers, timeout=10)
+    response = _session_get(url, headers=headers, auth_host=auth_host)
     response.raise_for_status()
     first_page = response.json()
     first_data = first_page.get("results", first_page) if isinstance(first_page, dict) else first_page
 
     if response.links.get("next"):
-        return fetch_paginated_json(url, max_pages=max_pages, headers=headers)
+        return fetch_paginated_json(url, max_pages=max_pages, headers=headers, auth_host=auth_host)
 
     # No Link header — try page-param style, but only if the first page suggests more exist
     # (heuristic: if the response body itself looks paginated, e.g. has "results"/"info")
     if isinstance(first_page, dict) and ("results" in first_page or "next" in first_page):
-        return fetch_paginated_json_by_page_param(url, max_pages=max_pages, headers=headers)
+        return fetch_paginated_json_by_page_param(url, max_pages=max_pages, headers=headers,
+                                                  auth_host=auth_host)
 
     # Neither pattern detected — treat as a single-page response
     return first_data if isinstance(first_data, list) else [first_data]
@@ -192,12 +228,15 @@ def ingest(source: str, pagination: str = "link") -> pd.DataFrame:
         _ensure_public_url(source)
         api_key = os.getenv("DATA_API_KEY")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Pin the bearer token to the approved host: redirects and Link-header
+        # URLs are re-validated per hop and never inherit Authorization.
+        auth_host = urlparse(source).hostname
         if pagination == "page_param":
-            raw = fetch_paginated_json_by_page_param(source, headers=headers)
+            raw = fetch_paginated_json_by_page_param(source, headers=headers, auth_host=auth_host)
         elif pagination == "link":
-            raw = fetch_paginated_json(source, headers=headers)
+            raw = fetch_paginated_json(source, headers=headers, auth_host=auth_host)
         elif pagination == "auto":
-            raw = fetch_paginated_json_auto(source, headers=headers)
+            raw = fetch_paginated_json_auto(source, headers=headers, auth_host=auth_host)
         else:
             raise ValueError(f"Unknown pagination style: {pagination!r} (expected 'link', 'page_param', or 'auto')")
         # Keep native JSON types (int stays int, bool stays bool).

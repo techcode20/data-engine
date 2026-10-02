@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { Suspense, lazy, useState } from "react";
 import { CODE_VERSIONS } from "../simulation/script";
 import { useTransit } from "../store";
@@ -13,7 +14,11 @@ function Poster({ code, title }: { code: string; title: string }) {
         {title} · PRINTED TIMETABLE
       </p>
       <div className="shiki-wrap max-h-[380px] overflow-auto">
-        {html ? <div dangerouslySetInnerHTML={{ __html: html }} /> : <PlainCode code={code} />}
+        {html ? (
+          <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+        ) : (
+          <PlainCode code={code} />
+        )}
       </div>
     </div>
   );

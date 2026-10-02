@@ -49,15 +49,17 @@ def main():
     history = load_json("run_summary.json", [])
     fixes = load_fix_log()
 
-    total_results = sum(len(r.get("results", [])) for r in history)
-    passes = sum(1 for r in history for x in r.get("results", []) if x.get("success"))
-    total_tokens = sum(x.get("usage", {}).get("total_tokens", 0)
-                       for r in history for x in r.get("results", []))
+    executed = [x for r in history for x in r.get("results", []) if x.get("success") is not None]
+    total_results = len(executed)
+    passes = sum(1 for x in executed if x.get("success"))
+    total_tokens = sum(x.get("usage", {}).get("total_tokens", 0) for x in executed)
     pass_rate = (passes / total_results * 100) if total_results else 0
 
     per_ds = {}
     for run in history:
         for x in run.get("results", []):
+            if x.get("success") is None:
+                continue  # dry-run SKIP: never executed, never a failure
             s = per_ds.setdefault(x["file"], {"runs": 0, "pass": 0, "att": 0, "tok": 0, "fail": 0})
             s["runs"] += 1
             s["pass"] += 1 if x.get("success") else 0
@@ -80,7 +82,7 @@ def main():
     run_rows = []
     for run in reversed(history[-12:]):
         for x in run.get("results", []):
-            badge = "✅" if x.get("success") else "❌"
+            badge = "✅" if x.get("success") else ("⏭" if x.get("success") is None else "❌")
             tok = x.get("usage", {}).get("total_tokens", 0)
             run_rows.append(
                 f"<tr><td>{esc(run.get('timestamp', ''))}</td><td>{esc(x.get('file', ''))}</td>"

@@ -55,6 +55,20 @@ def _infer_valid_schema(df, rules, sample_rows, file_path, max_schema_tries=2):
     raise ValueError(f"model could not emit a valid schema: {last_error}")
 
 
+def _input_hash(file_path, rules) -> str:
+    """Content fingerprint distinguishing reruns over different data.
+
+    Local files hash by content, URLs by address (body may change between
+    fetches — the schema fingerprint covers that case instead).
+    """
+    try:
+        with open(file_path, "rb") as f:
+            content = hashlib.md5(f.read()).hexdigest()
+    except (OSError, TypeError):
+        content = hashlib.md5(str(file_path).encode("utf-8")).hexdigest()
+    return hashlib.md5(f"{content}:{rules}".encode("utf-8")).hexdigest()
+
+
 def _content_fingerprint(source: str, df) -> str | None:
     # Local files are already fingerprinted by content hash inside
     # schema_cache; for URLs the address alone goes stale when remote data
@@ -72,6 +86,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
                 no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False):
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
+    input_hash = _input_hash(file_path, rules)
     try:
         df = ingest(file_path, pagination=pagination)
         if not no_pre_clean:
@@ -96,6 +111,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 return {"file": file_path, "success": False, "attempts": 0,
                         "usage": usage, "budget_stopped": False,
                         "error": f"schema rejected: {e}",
+                        "input_hash": input_hash,
                         "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
         if not no_cache:
             set_cached_schema(file_path, rules, schema_json, fingerprint)
@@ -109,6 +125,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             return {"file": file_path, "success": False, "attempts": 0,
                     "usage": usage, "budget_stopped": False,
                     "error": f"cached schema unusable: {e}",
+                    "input_hash": input_hash,
                     "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
         cached_code = None if no_cache else get_cached_code(schema_json, rules)
         if cached_code is not None:
@@ -126,6 +143,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         return {"file": file_path, "success": False, "attempts": 0,
                 "usage": usage, "budget_stopped": False,
                 "error": f"setup failed: {type(e).__name__}: {e}",
+                "input_hash": input_hash,
                 "rows_in": 0, "rows_out": 0, "rows_dropped": 0}
     if dry_run:
         print("\n=== DRY RUN — SCHEMA ===")
@@ -133,7 +151,8 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         print("\n=== DRY RUN — GENERATED CODE ===")
         print(code)
         return {"file": file_path, "success": None, "attempts": 0,
-                "usage": _run_usage(file_path), "budget_stopped": False}
+                "usage": _run_usage(file_path), "budget_stopped": False,
+                "input_hash": input_hash}
 
     attempt = 0
     success = False
@@ -241,6 +260,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
     print(f"🧾 reconciliation: {len(df)} in → {rows_out} out ({len(df) - rows_out} dropped)")
     return {"file": file_path, "success": success, "attempts": attempt,
             "usage": usage, "budget_stopped": budget_stopped,
+            "input_hash": input_hash,
             "rows_in": len(df), "rows_out": rows_out,
             "rows_dropped": len(df) - rows_out}
 
@@ -301,6 +321,45 @@ def _validate_cli(args, parser):
             _check_output_path(args.output)
         except ValueError as e:
             parser.error(str(e))
+
+
+def _expand_str(value):
+    return substitute_env_vars(value) if isinstance(value, str) else value
+
+
+# Config keys and the argparse attribute each one overrides (single-config).
+_CONFIG_KEYS = (
+    ("file", "file"), ("rules", "rules"), ("retries", "retries"),
+    ("output", "output"), ("pagination", "pagination"), ("strict", "strict"),
+    ("sample_rows", "sample_rows"), ("no_cache", "no_cache"),
+    ("max_drop", "max_drop"), ("no_pre_clean", "no_pre_clean"),
+    ("max_cost", "max_cost_usd"), ("smart_parse", "smart_parse"),
+)
+_EXPAND_KEYS = ("file", "rules", "output")
+
+
+def _apply_config_to_args(args, config):
+    """Overlay every documented config key onto parsed CLI args.
+
+    {ENV_VAR} placeholders expand AFTER the merge, so --config values expand
+    too (CLI values get a harmless, idempotent second pass).
+    """
+    for cfg_key, arg_key in _CONFIG_KEYS:
+        if cfg_key in config and config[cfg_key] is not None:
+            setattr(args, arg_key, config[cfg_key])
+    for key in _EXPAND_KEYS:
+        val = getattr(args, key, None)
+        if isinstance(val, str):
+            setattr(args, key, substitute_env_vars(val))
+    return args
+
+
+def _expand_config(cfg: dict) -> dict:
+    """Copy of a batch config with {ENV_VAR} expanded in string values."""
+    out = dict(cfg)
+    for key in _EXPAND_KEYS:
+        out[key] = _expand_str(out.get(key))
+    return out
 
 
 def load_config(config_path):
@@ -365,20 +424,16 @@ def main():
               "GEMINI_PRICE_OUTPUT_PER_MTOK are not configured — budget guard is inactive.")
     _validate_cli(args, parser)
 
-    # Apply configuration file fallbacks if provided
+    # Apply configuration file fallbacks if provided (every documented key,
+    # not just file/rules/retries/output — single-config behaves like batch).
     if args.config:
-        config = load_config(args.config)
-        args.file = config.get("file", args.file)
-        args.rules = config.get("rules", args.rules)
-        args.retries = config.get("retries", args.retries)
-        args.output = config.get("output", args.output)
+        _apply_config_to_args(args, load_config(args.config))
 
-    # Expand {ENV_VAR} AFTER the merge so --config values expand too
-    # (CLI values get a harmless, idempotent second pass).
-    if args.file:
-        args.file = substitute_env_vars(args.file)
-    if args.rules:
-        args.rules = substitute_env_vars(args.rules)
+    # CLI-only runs still need their placeholders expanded.
+    for key in _EXPAND_KEYS:
+        val = getattr(args, key, None)
+        if isinstance(val, str):
+            setattr(args, key, substitute_env_vars(val))
 
     results = []
 
@@ -408,7 +463,7 @@ def main():
         if not config_files:
             parser.error(f"No .yaml files found in {args.config_dir}")
 
-        configs_to_run = [load_config(p) for p in config_files]
+        configs_to_run = [_expand_config(load_config(p)) for p in config_files]
 
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
             futures = {
@@ -445,6 +500,7 @@ def main():
                                               "cost_usd": None},
                                     "budget_stopped": False,
                                     "error": f"crashed: {type(e).__name__}: {e}",
+                                    "input_hash": None,
                                     "rows_in": 0, "rows_out": 0, "rows_dropped": 0})
     else:
         if not args.file or not args.rules:
