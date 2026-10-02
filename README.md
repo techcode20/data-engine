@@ -167,6 +167,23 @@ smart_parse: false                # optional, best-effort currency/datetime pars
 
 - `.env` is gitignored and a pre-commit hook refuses to commit it or any staged diff containing a likely API key.
 - Pass secrets via `{ENV_VAR}` placeholders or environment variables — never paste raw keys into configs, prompts, or run logs.
+
+## Environment variables & limits
+
+| Variable | Default | What it does |
+|---|---|---|
+| `GEMINI_API_KEY` | (required) | Model access. Never committed; never visible to generated code (sandbox env is scrubbed). |
+| `DATA_API_KEY` | — | Bearer token attached to API fetches (same host only). |
+| `OPENWEATHER_API_KEY` | — | Demo source only. |
+| `GEMINI_PRICE_INPUT_PER_MTOK` / `GEMINI_PRICE_OUTPUT_PER_MTOK` | — | USD per 1M tokens, from the provider pricing page. Enables `$` estimates, `--max-cost-usd`, and cost alerts. No hardcoded prices. |
+| `GEMINI_TIMEOUT_S` | `120` | Per-LLM-call timeout. Expiry is retryable, then terminal. |
+| `SANDBOX_TIMEOUT_S` | `120` | Kill budget per `clean()` execution. Hung code becomes a fixable failure, not a hung run. |
+| `SANDBOX_MAX_RSS_BYTES` / `SANDBOX_MAX_CPU_S` | `0` (off) | POSIX-only memory/CPU caps for the sandbox child. On Windows the timeout is the guard. |
+| `DATA_MAX_BYTES` | `500 MB` | Local inputs above this are refused before loading. |
+| `DATA_ALLOW_PRIVATE_HOSTS` | — | Set to `1` to fetch intranet/test URLs the SSRF guard would refuse. |
+| `DAILY_MAX_TOKENS` / `DAILY_MAX_COST` | `100000` / unset | Alert thresholds consumed by `run_daily.bat`. |
+
+Error budget per dataset: `retries` attempts (default 5) × `GEMINI_TIMEOUT_S` + `SANDBOX_TIMEOUT_S` bounds wall-clock; `--strict` fails after attempt 1; identical model output stops the loop immediately instead of burning retries. Exit code is `1` on any failure, `0` only when everything passes.
 - If a key ever leaks (it happened once with an OpenWeather key in run history), rotate it in the provider console immediately.
 
 ## Evaluation

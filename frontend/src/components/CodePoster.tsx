@@ -47,7 +47,7 @@ export function CodePoster() {
                   ? "border-[#141210] bg-[#141210] text-[#f6f3ea]"
                   : available
                     ? "border-[#141210] bg-[#fffdf6] hover:bg-[#f6f3ea]"
-                    : "cursor-not-allowed border-[#a8a091] text-[#a8a091]"
+                    : "cursor-not-allowed border-[#57534e] text-[#57534e]"
               }`}
             >
               v{v}

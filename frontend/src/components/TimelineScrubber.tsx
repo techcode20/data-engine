@@ -1,9 +1,11 @@
 import { useTransit } from "../store";
 
-/** Timeline scrubber styled as a transit strip: jump back to any attempt. */
+/** Timeline scrubber styled as a transit strip: jump back to any ATTEMPT
+ *  already reached. Future attempts stay locked — scrubbing is rewind-only. */
 export function TimelineScrubber() {
   const phase = useTransit((s) => s.phase);
   const attempt = useTransit((s) => s.attempt);
+  const maxAttempt = useTransit((s) => s.maxAttempt);
   const scrubToAttempt = useTransit((s) => s.scrubToAttempt);
   const disabled = phase === "idle";
 
@@ -18,21 +20,25 @@ export function TimelineScrubber() {
           ))}
         </div>
       </div>
-      {[1, 2, 3].map((n) => (
-        <button
-          key={n}
-          disabled={disabled}
-          onClick={() => scrubToAttempt(n)}
-          aria-label={`Rewind to attempt ${n}`}
-          className={`h-8 w-8 rounded-md border-2 font-board text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-30 ${
-            attempt === n && phase !== "idle"
-              ? "border-[#141210] bg-[#141210] text-[#f6f3ea]"
-              : "border-[#141210] bg-[#fffdf6] hover:bg-[#f6f3ea]"
-          }`}
-        >
-          {n}
-        </button>
-      ))}
+      {[1, 2, 3].map((n) => {
+        const locked = n > maxAttempt;
+        return (
+          <button
+            key={n}
+            disabled={disabled || locked}
+            onClick={() => scrubToAttempt(n)}
+            aria-label={locked ? `Attempt ${n} not reached yet` : `Rewind to attempt ${n}`}
+            title={locked ? "Not reached yet" : `Rewind to attempt ${n}`}
+            className={`h-8 w-8 rounded-md border-2 font-board text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-30 ${
+              attempt === n && phase !== "idle"
+                ? "border-[#141210] bg-[#141210] text-[#f6f3ea]"
+                : "border-[#141210] bg-[#fffdf6] hover:bg-[#f6f3ea]"
+            }`}
+          >
+            {n}
+          </button>
+        );
+      })}
     </div>
   );
 }

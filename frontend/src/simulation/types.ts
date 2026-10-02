@@ -1,7 +1,7 @@
 /** Transit-simulation types. Stages ARE stations; datasets ride as trains. */
 import type { StationId } from "../transit/mapConfig";
 
-export type StageStatus = "idle" | "running" | "passed" | "failed" | "retrying";
+export type StageStatus = "idle" | "running" | "passed" | "failed" | "retrying" | "timeout" | "cancelled";
 
 export interface StageMeta {
   id: StationId;
@@ -31,11 +31,22 @@ export interface CheckItem {
 
 export type CarriageState = "dirty" | "clean" | "partial" | "rejected";
 
-export interface BatchRow {
+export interface KeptRow {
   values: string[];
-  fate: "kept" | "dropped";
+  fate: "kept";
   reason: string;
+  /** Post-clean() values — verified by executing v3 on the real backend. */
+  cleaned: string[];
 }
+
+export interface DroppedRow {
+  values: string[];
+  fate: "dropped";
+  reason: string;
+  cleaned?: undefined;
+}
+
+export type BatchRow = KeptRow | DroppedRow;
 
 export interface CarriageInfo {
   id: number;
@@ -92,6 +103,7 @@ export type EngineEvent =
   | { type: "code"; version: number }
   | { type: "checks"; items: CheckItem[] }
   | { type: "score"; value: number }
+  | { type: "score-reset"; value: number }
   | { type: "log"; level: LogLevel; text: string }
   | { type: "error"; text: string | null }
   | { type: "alert"; text: string }

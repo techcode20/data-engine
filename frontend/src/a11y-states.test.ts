@@ -15,14 +15,21 @@ function ratio(fg: string, bg: string): number {
 }
 
 describe("contrast (V4/V6)", () => {
-  it("faint secondary text meets AA on paper (4.5:1 for small text)", () => {
-    // Used for: disabled tabs, placeholders, empty states, timestamps, legend.
-    expect(ratio("a8a091", "f6f3ea")).toBeGreaterThanOrEqual(4.5);
+  // Small secondary text must use inkSoft, never faint (#a8a091 ≈ 2.3:1).
+  it("secondary text meets AA on paper (4.5:1 for small text)", () => {
+    expect(ratio("57534e", "f6f3ea")).toBeGreaterThanOrEqual(4.5);
+    expect(ratio("6b6455", "f6f3ea")).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("white-on-green status chips meet AA for small text", () => {
-    // Used for: RIDES ON / SHUNTED chips, pass pills (10-11px).
-    expect(ratio("ffffff", "16a34a")).toBeGreaterThanOrEqual(4.5);
+  // Status chips use deep backgrounds so white small text passes.
+  it("white-on-chip pairings meet AA for small text", () => {
+    expect(ratio("ffffff", "15803d")).toBeGreaterThanOrEqual(4.5);
+    expect(ratio("ffffff", "b91c1c")).toBeGreaterThanOrEqual(4.5);
+    expect(ratio("ffffff", "c62828")).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("terminal secondary text meets AA on near-black", () => {
+    expect(ratio("b5aea1", "141210")).toBeGreaterThanOrEqual(4.5);
   });
 });
 

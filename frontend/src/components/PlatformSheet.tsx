@@ -41,6 +41,8 @@ function SheetShell({ children, onClose, mobile, label }: { children: React.Reac
           onKeyDown={(e) => {
             if (e.key === "Escape") onClose();
           }}
+          tabIndex={-1}
+          ref={(el) => el?.focus()}
         >
           {children}
         </motion.div>
@@ -77,6 +79,8 @@ const DOT: Record<string, string> = {
   passed: "#16a34a",
   failed: "#e3342f",
   retrying: "#f59e0b",
+  timeout: "#f59e0b",
+  cancelled: "#78716c",
 };
 
 function SheetBody({ id, status, durationMs, onClose }: { id: StationId; status: string; durationMs: number | null; onClose: () => void }) {
@@ -121,8 +125,8 @@ function SheetBody({ id, status, durationMs, onClose }: { id: StationId; status:
       </div>
       {(id === "validation" || id === "repair") && errorText && (
         <div className="mt-3 rounded-lg border-2 border-[#e3342f] bg-[#e3342f]/5 p-2.5">
-          <p className="font-board mb-1 text-[10px] tracking-widest text-[#e3342f]">FEEDBACK TO MODEL</p>
-          <p className="font-board text-[11px] leading-relaxed">{errorText}</p>
+          <p className="font-board mb-1 text-[10px] tracking-widest text-[#b91c1c]">FEEDBACK TO MODEL</p>
+          <p className="font-board text-[11px] leading-relaxed text-[#141210]">{errorText}</p>
         </div>
       )}
       <p className="mt-3 text-[11px] italic text-[#6b6455]" style={{ color: COLORS.muted }}>

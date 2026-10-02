@@ -1,6 +1,6 @@
+import { mapDragSuppressed } from "../lib/mapGesture";
 import { useTransit } from "../store";
-import { COLORS, CORNER_R, LINE_WIDTH, STATION_R } from "../tokens";
-import {
+import { COLORS, CORNER_R, LINE_WIDTH, STATION_R } from "../tokens";import {
   LINE_COLOR,
   SEGMENTS,
   STATIONS,
@@ -27,6 +27,7 @@ function Carriage({ x, state, index }: { x: number; state: CarriageState; index:
       aria-label={`Carriage ${index + 1}, ${state}. Open batch magnifier.`}
       onClick={(e) => {
         e.stopPropagation();
+        if (mapDragSuppressed()) return; // that was a pan, not a tap
         selectCarriage(index);
       }}
       onKeyDown={(e) => {
@@ -122,7 +123,7 @@ function StationGlyph({ id }: { id: StationId }) {
   const status = useTransit((s) => s.stages[id].status);
   const selectStation = useTransit((s) => s.selectStation);
   const [x, y] = mobile ? cfg.mpos : cfg.pos;
-  const dot = status === "passed" ? COLORS.memory : status === "failed" ? COLORS.main : status === "running" ? COLORS.validation : status === "retrying" ? COLORS.repair : "transparent";
+  const dot = status === "passed" ? COLORS.memory : status === "failed" ? COLORS.main : status === "running" ? COLORS.validation : status === "retrying" || status === "timeout" ? COLORS.repair : status === "cancelled" ? "#78716c" : "transparent";
 
   return (
     <g>
@@ -131,7 +132,10 @@ function StationGlyph({ id }: { id: StationId }) {
         tabIndex={0}
         aria-label={`${cfg.name} station, ${status}. Open platform sheet.`}
         style={{ cursor: "pointer" }}
-        onClick={() => selectStation(id)}
+        onClick={() => {
+          if (mapDragSuppressed()) return; // that was a pan, not a tap
+          selectStation(id);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -176,8 +180,6 @@ export function TransitMap() {
   const rerouteOn = useTransit((s) => s.rerouteOn);
   const disruption = useTransit((s) => s.disruption);
   const memNodes = useTransit((s) => s.memNodes);
-  const vb = mobile ? { w: 400, h: 980 } : { w: 1200, h: 680 };
-  void vb;
 
   const pts = (mpts: [number, number][], dpts: [number, number][]) => (mobile ? mpts : dpts);
 
@@ -202,7 +204,7 @@ export function TransitMap() {
 
   const arc = STATIONS.find((s) => s.id === "archive")!;
   const [ax, ay] = mobile ? arc.mpos : arc.pos;
-  const constellation = memNodes.slice(0, 9).map((n, i) => {
+  const constellation = memNodes.slice(-9).map((n, i) => {
     const a = (i / 9) * Math.PI * 2 - Math.PI / 2;
     return { n, x: ax + 120 + Math.cos(a) * 62, y: ay - 60 + Math.sin(a) * 44 };
   });
@@ -240,9 +242,7 @@ export function TransitMap() {
               <path d={d} fill="none" stroke={color} strokeWidth={LINE_WIDTH} strokeLinecap="round" strokeDasharray={s.style === "dashed" ? "14 10" : undefined} />
             )}
             {disruption && s.id === "main-b" && (
-              <path d={d} fill="none" stroke="url(#hazard)" strokeWidth={LINE_WIDTH + 6} strokeLinecap="round" opacity={0.9}>
-                <animate attributeName="opacity" values="0.9;0.45;0.9" dur="1s" repeatCount="indefinite" />
-              </path>
+              <path d={d} fill="none" stroke="url(#hazard)" strokeWidth={LINE_WIDTH + 6} strokeLinecap="round" opacity={0.9} className="hazard-flash" />
             )}
             {s.label && (
               <text
@@ -251,7 +251,7 @@ export function TransitMap() {
                 textAnchor="middle"
                 fontSize={13}
                 fontWeight={700}
-                fill={s.line === "siding" ? "#78716c" : color}
+                fill={COLORS.ink}
                 fontFamily="'Space Grotesk',sans-serif"
               >
                 {s.label}

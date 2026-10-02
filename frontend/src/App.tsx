@@ -42,7 +42,7 @@ export default function App() {
               <TransitMap />
             </div>
             <p className="border-t-2 border-dashed border-[#141210]/20 px-4 py-2 font-board text-[11px] text-[#6b6455]">
-              Drag to pan · scroll or pinch to zoom · tap stations &amp; carriages · arrow keys work when the map is focused
+              Drag to pan · Ctrl-scroll or pinch to zoom · tap stations &amp; carriages · arrow keys work when the map is focused
             </p>
           </section>
 
@@ -74,7 +74,7 @@ export default function App() {
         </main>
         <footer className="px-4 py-8 text-center font-board text-xs text-[#6b6455] sm:px-6">
           <p>
-            PIPELINEFORGE TRANSIT AUTHORITY · simulated frontend — plug <span className="font-bold text-[#e3342f]">/simulation</span> into
+            PIPELINEFORGE TRANSIT AUTHORITY · simulated frontend — plug <span className="font-bold text-[#b91c1c]">/simulation</span> into
             the real engine API when ready · mind the gap
           </p>
         </footer>

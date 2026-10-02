@@ -25,6 +25,7 @@ const STATUS_INK: Record<string, string> = {
   "ON TIME": "#16a34a",
   DELAYED: "#e3342f",
   REROUTING: "#f59e0b",
+  CANCELLED: "#f59e0b",
   "ALL SERVICES RESTORED": "#16a34a",
 };
 

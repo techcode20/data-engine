@@ -15,6 +15,11 @@ export const COLORS = {
   clean: "#ffffff",
   dirty: "#fb923c",
   rejected: "#78716c",
+  // Contrast-safe variants for SMALL text / chips (AA ≥ 4.5:1, verified).
+  inkSoft: "#57534e",
+  terminalDim: "#b5aea1",
+  passDeep: "#15803d",
+  failDeep: "#b91c1c",
 } as const;
 
 export const LINE_WIDTH = 10;
@@ -32,4 +37,6 @@ export const STAGE_STATUS_LABEL: Record<string, string> = {
   passed: "ON TIME",
   failed: "DELAYED",
   retrying: "REROUTING",
+  timeout: "TIMED OUT",
+  cancelled: "CANCELLED",
 };

@@ -64,10 +64,10 @@ export function DepotTerminal() {
         aria-label="Depot terminal output"
         className="slim-scroll h-60 overflow-y-auto p-3 font-board text-xs leading-relaxed"
       >
-        {visible.length === 0 && <p className="text-[#78716c]">$ awaiting departure — press DEPART.</p>}
+        {visible.length === 0 && <p className="text-[#b5aea1]">$ awaiting departure — press DEPART.</p>}
         {visible.map((l) => (
           <p key={l.id} className="whitespace-pre-wrap break-words">
-            <span className="text-[#78716c]">[{l.t}]</span>{" "}
+            <span className="text-[#b5aea1]">[{l.t}]</span>{" "}
             <span className={`font-bold ${LEVEL_COLOR[l.level] ?? "text-white"}`}>{l.level.padEnd(5)}</span>{" "}
             <span>{l.text}</span>
           </p>

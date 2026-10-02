@@ -37,10 +37,29 @@ describe("scrub replay (V1)", () => {
     engineRef()?.setTestTimeScale(500);
     await waitFor(() => useTransit.getState().phase === "done");
     expect(useTransit.getState().scoreHistory).toEqual([36, 74, 97]);
+    expect(useTransit.getState().ticketsOut).toBe(true);
 
     useTransit.getState().scrubToAttempt(1);
+    // Rewind reverts earned state: tickets hide until re-earned.
+    expect(useTransit.getState().ticketsOut).toBe(false);
     await waitFor(() => useTransit.getState().phase === "done");
     // The replayed run must produce ONE clean path, not [36,74,97,0,36,74,97].
     expect(useTransit.getState().scoreHistory).toEqual([36, 74, 97]);
+    expect(useTransit.getState().ticketsOut).toBe(true);
+  });
+
+  it("replaying does not duplicate memory links", async () => {
+    useTransit.getState().depart();
+    engineRef()?.setTestTimeScale(500);
+    await waitFor(() => useTransit.getState().phase === "done");
+    const linksAfterRun = useTransit.getState().memLinks.length;
+
+    useTransit.getState().scrubToAttempt(2);
+    await waitFor(() => useTransit.getState().phase === "done");
+    const keys = useTransit
+      .getState()
+      .memLinks.map((l) => `${l.source}|${l.target}|${l.label}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(useTransit.getState().memLinks.length).toBe(linksAfterRun);
   });
 });

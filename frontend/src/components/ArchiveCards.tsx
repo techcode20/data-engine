@@ -15,7 +15,7 @@ export function ArchiveCards() {
   }, [memNodes, q]);
 
   const dots = useMemo(() => {
-    const shown = memNodes.slice(0, 10);
+    const shown = memNodes.slice(-10);
     return shown.map((n, i) => {
       const a = (i / Math.max(1, shown.length)) * Math.PI * 2 - Math.PI / 2;
       return { n, x: 150 + Math.cos(a) * 105, y: 90 + Math.sin(a) * 62 };
@@ -34,7 +34,7 @@ export function ArchiveCards() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="e.g. bool, datetime, currency…"
-          className="w-full rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] px-3 py-2 text-sm outline-none placeholder:text-[#a8a091]"
+          className="w-full rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] px-3 py-2 text-sm outline-none placeholder:text-[#6b6455]"
         />
         <div className="mt-3 max-h-[300px] space-y-2.5 overflow-y-auto pr-1 slim-scroll">
           {fixes.length === 0 && (

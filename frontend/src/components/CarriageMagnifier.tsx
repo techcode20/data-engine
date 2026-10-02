@@ -46,19 +46,45 @@ export function CarriageMagnifier() {
               {car.rows.map((r, i) => (
                 <div key={i} className={`rounded-xl border-2 p-3 ${r.fate === "kept" ? "border-[#16a34a] bg-[#16a34a]/5" : "border-[#e3342f] bg-[#e3342f]/5"}`}>
                   <p className="font-board mb-2 text-[10px] tracking-widest">
-                    <span className={`rounded px-1.5 py-0.5 font-bold ${r.fate === "kept" ? "bg-[#16a34a] text-white" : "bg-[#e3342f] text-white"}`}>
+                    <span className={`rounded px-1.5 py-0.5 font-bold ${r.fate === "kept" ? "bg-[#15803d] text-white" : "bg-[#b91c1c] text-white"}`}>
                       {r.fate === "kept" ? "RIDES ON" : "SHUNTED"}
                     </span>{" "}
                     <span className="text-[#6b6455]">{r.reason}</span>
                   </p>
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-board text-[11px]">
-                    {COLUMNS.map((c, j) => (
-                      <div key={c} className="contents">
-                        <dt className="text-[#6b6455]">{c}</dt>
-                        <dd className="break-all">{r.values[j] === "" ? <em className="text-[#a8a091]">∅ empty</em> : r.values[j]}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="font-board mb-1 text-[10px] font-bold tracking-widest text-[#6b6455]">RAW</p>
+                      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-board text-[11px]">
+                        {COLUMNS.map((c, j) => (
+                          <div key={c} className="contents">
+                            <dt className="text-[#6b6455]">{c}</dt>
+                            <dd className="break-all">{r.values[j] === "" ? <em className="text-[#6b6455]">∅ empty</em> : r.values[j]}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                    <div>
+                      <p className="font-board mb-1 text-[10px] font-bold tracking-widest text-[#6b6455]">CLEANED</p>
+                      {r.fate === "kept" && r.cleaned ? (
+                        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-board text-[11px]">
+                          {COLUMNS.map((c, j) => {
+                            const changed = r.cleaned[j] !== r.values[j];
+                            return (
+                              <div key={c} className="contents">
+                                <dt className="text-[#6b6455]">{c}</dt>
+                                <dd className={`break-all ${changed ? "font-bold text-[#15803d]" : ""}`}>
+                                  {r.cleaned[j]}
+                                  {changed && <span className="ml-1 text-[9px] text-[#6b6455]">← {r.values[j] === "" ? "∅" : r.values[j]}</span>}
+                                </dd>
+                              </div>
+                            );
+                          })}
+                        </dl>
+                      ) : (
+                        <p className="font-board text-[11px] italic text-[#6b6455]">no cleaned values — row shunted to REJECTED siding</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

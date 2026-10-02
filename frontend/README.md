@@ -31,6 +31,13 @@ React 19 + Vite + TypeScript · Tailwind CSS v4 · SVG map (no canvas) · GSAP +
 
 `npm run simcheck` bundles the real engine headlessly and asserts 30+ invariants: attempt order, fail→fail→pass validation, code versions, score path, carriage fates, single reroute, snapshot contents, route geometry. It caught a real bug once already (GSAP `.call()` defaulting to timeline-end, which bunched the whole narrative into one burst).
 
+```bash
+npm run test:unit  # vitest: replay integrity, upload cap, persistence, contrast, states
+npm run test:e2e   # playwright (chromium): mobile sheet focus, focus-visible ring
+```
+
+Uploads over 10 MB are refused at the gate; run state persists across refresh in `sessionStorage` (mid-run restores paused for re-dispatch); a Cancel button parks the run with visited stations marked CANCELLED.
+
 ## Plugging in the real backend
 
 1. Implement `PipelineBackend` in `src/simulation/engine.ts` as `ApiBackend`: drive stage events from `POST /ingest → /infer → /generate → /sandbox → /validate` (SSE or websocket), keep GSAP motion driven by arrival events.

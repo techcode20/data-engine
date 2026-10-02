@@ -29,6 +29,58 @@ export interface StoredLog {
   text: string;
 }
 
+/** 10 MB — anything bigger would freeze the tab in f.text()/JSON.parse. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+const SNAP_KEY = "pf-transit-state";
+const SNAP_VERSION = 1;
+
+function saveSnapshot(s: TransitState) {
+  try {
+    sessionStorage.setItem(
+      SNAP_KEY,
+      JSON.stringify({
+        v: SNAP_VERSION,
+        file: s.file,
+        phase: s.phase,
+        attempt: s.attempt,
+        maxAttempt: s.maxAttempt,
+        score: s.score,
+        scoreHistory: s.scoreHistory,
+        checks: s.checks,
+        errorText: s.errorText,
+        disruption: s.disruption,
+        rerouteOn: s.rerouteOn,
+        crewVisible: false,
+        carriages: s.carriages,
+        logs: s.logs.slice(-150),
+        alerts: s.alerts.slice(-6),
+        memNodes: s.memNodes,
+        memLinks: s.memLinks,
+        board: s.board,
+        ticketsOut: s.ticketsOut,
+        speed: s.speed,
+        viewingVersion: s.viewingVersion,
+        latestVersion: s.latestVersion,
+      }),
+    );
+  } catch {
+    /* private mode / quota — the run continues, just not resumable */
+  }
+}
+
+function loadSnapshot(): Partial<TransitState> | null {
+  try {
+    const raw = sessionStorage.getItem(SNAP_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw);
+    if (snap?.v !== SNAP_VERSION || !snap?.file) return null;
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
 type StageState = { status: StageStatus; durationMs: number | null };
 
 interface TransitState {
@@ -36,6 +88,8 @@ interface TransitState {
   fileError: string | null;
   phase: Phase;
   attempt: number;
+  maxAttempt: number;
+  needsReplay: boolean;
   maxRetries: number;
   stages: Record<StationId, StageState>;
   latestVersion: number;
@@ -69,6 +123,7 @@ interface TransitState {
   loadFile: (f: File) => Promise<void>;
   depart: () => void;
   togglePause: () => void;
+  cancelRun: () => void;
   reset: () => void;
   setSpeed: (s: Speed) => void;
   setSound: (b: boolean) => void;
@@ -89,6 +144,11 @@ const idleStages = (): Record<StationId, StageState> =>
     (Object.keys(STAGE_META) as StationId[]).map((id) => [id, { status: "idle", durationMs: null }]),
   ) as Record<StationId, StageState>;
 
+const passedStages = (): Record<StationId, StageState> =>
+  Object.fromEntries(
+    (Object.keys(STAGE_META) as StationId[]).map((id) => [id, { status: "passed", durationMs: null }]),
+  ) as Record<StationId, StageState>;
+
 let logSeq = 0;
 let engine: TransitEngine | null = null;
 
@@ -102,31 +162,45 @@ export function engineRef(): TransitEngine | null {
   return engine;
 }
 
-export const useTransit = create<TransitState>()((set, get) => ({
-  file: null,
+export const useTransit = create<TransitState>()((set, get) => {
+  const restored = loadSnapshot();
+  const restoredRunning = restored?.phase === "running";
+  const restoredDone = restored?.phase === "done";
+  if (restored?.logs?.length) {
+    logSeq = Math.max(...restored.logs.map((l: StoredLog) => l.id), 0);
+  }
+
+  return {
+  file: restored?.file ?? null,
   fileError: null,
-  phase: "idle",
-  attempt: 1,
+  phase: restored?.phase ?? "idle",
+  attempt: restored?.attempt ?? 1,
+  maxAttempt: restored?.maxAttempt ?? 1,
+  // A refresh kills GSAP timelines: a restored mid-run can never resume in
+  // place — it must replay its attempt. Flag it so play means "re-dispatch".
+  needsReplay: !!restoredRunning,
   maxRetries: 5,
-  stages: idleStages(),
-  latestVersion: 1,
-  viewingVersion: 1,
-  checks: [],
-  score: 0,
-  scoreHistory: [],
-  errorText: null,
-  disruption: null,
-  rerouteOn: false,
+  stages: restoredDone ? passedStages() : idleStages(),
+  latestVersion: restored?.latestVersion ?? 1,
+  viewingVersion: restored?.viewingVersion ?? 1,
+  checks: restored?.checks ?? [],
+  score: restored?.score ?? 0,
+  scoreHistory: restored?.scoreHistory ?? [],
+  errorText: restored?.errorText ?? null,
+  disruption: restoredRunning ? null : (restored?.disruption ?? null),
+  rerouteOn: restored?.rerouteOn ?? false,
   crewVisible: false,
-  carriages: ["dirty", "dirty", "dirty", "dirty"],
-  logs: [],
-  alerts: [],
-  memNodes: baseMemory().nodes,
-  memLinks: baseMemory().links,
-  board: { next: "Intake Central", status: "STANDBY" },
-  ticketsOut: false,
-  speed: 1,
-  paused: false,
+  carriages: restored?.carriages ?? ["dirty", "dirty", "dirty", "dirty"],
+  logs: restored?.logs ?? [],
+  alerts: restored?.alerts ?? [],
+  memNodes: restored?.memNodes ?? baseMemory().nodes,
+  memLinks: restored?.memLinks ?? baseMemory().links,
+  board: restoredRunning
+    ? { next: "Intake Central", status: "HELD FOR RE-DISPATCH" }
+    : (restored?.board ?? { next: "Intake Central", status: "STANDBY" }),
+  ticketsOut: restored?.ticketsOut ?? false,
+  speed: restored?.speed ?? 1,
+  paused: restoredRunning ? true : false,
   sound: false,
   follow: false,
   mobile: false,
@@ -148,6 +222,14 @@ export const useTransit = create<TransitState>()((set, get) => ({
     const isJson = lower.endsWith(".json");
     if (!isCsv && !isJson) {
       set({ fileError: `No service for "${f.name}" — this gate accepts .csv and .json only.` });
+      return;
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      set({
+        fileError: ` "${f.name}" is ${(f.size / 1024 / 1024).toFixed(1)} MB — the gate caps files at ${
+          MAX_UPLOAD_BYTES / 1024 / 1024
+        } MB so the tab stays alive. Split it and ride in batches.`,
+      });
       return;
     }
     try {
@@ -184,6 +266,8 @@ export const useTransit = create<TransitState>()((set, get) => ({
     set({
       phase: "running",
       attempt: 1,
+      maxAttempt: 1,
+      needsReplay: false,
       stages: idleStages(),
       latestVersion: 1,
       viewingVersion: 1,
@@ -206,10 +290,20 @@ export const useTransit = create<TransitState>()((set, get) => ({
       selectedCarriage: null,
     });
     e.start();
+    saveSnapshot(get());
   },
 
   togglePause: () => {
     if (get().phase !== "running" || !engine) return;
+    // Post-refresh timelines are dead: "play" means re-dispatch the attempt.
+    if (get().needsReplay) {
+      const n = get().attempt;
+      set({ needsReplay: false, paused: false });
+      engine.setMobile(get().mobile);
+      engine.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      engine.replayAttempt(n);
+      return;
+    }
     if (get().paused) {
       engine.resume();
       set({ paused: false });
@@ -219,13 +313,40 @@ export const useTransit = create<TransitState>()((set, get) => ({
     }
   },
 
+  cancelRun: () => {
+    if (get().phase !== "running" || !engine) return;
+    engine.stop();
+    set((s) => {
+      const stages = { ...s.stages };
+      (Object.keys(stages) as StationId[]).forEach((id) => {
+        if (stages[id].status === "running") stages[id] = { ...stages[id], status: "cancelled" };
+      });
+      return {
+        stages,
+        paused: false,
+        needsReplay: false,
+        phase: "idle" as Phase,
+        board: { next: "Intake Central", status: "CANCELLED" },
+        logs: [...s.logs, { id: ++logSeq, t: "—", level: "WARN", text: "run cancelled by the conductor — partial progress kept on the map" }],
+      };
+    });
+    saveSnapshot(get());
+  },
+
   reset: () => {
     engine?.stop();
     logSeq = 0;
+    try {
+      sessionStorage.removeItem(SNAP_KEY);
+    } catch {
+      /* ignore */
+    }
     const mem = baseMemory();
     set({
       phase: "idle",
       attempt: 1,
+      maxAttempt: 1,
+      needsReplay: false,
       stages: idleStages(),
       latestVersion: 1,
       viewingVersion: 1,
@@ -259,6 +380,12 @@ export const useTransit = create<TransitState>()((set, get) => ({
     if (get().mobile !== m) {
       set({ mobile: m });
       engine?.setMobile(m);
+      // In-flight tweens hold detached path geometry after a layout flip —
+      // re-dispatch the current attempt instead of glitching mid-track.
+      if (get().phase === "running" && engine) {
+        engine.replayAttempt(get().attempt);
+        set({ paused: false });
+      }
     }
   },
   selectStation: (id) => set({ selectedStation: id }),
@@ -287,10 +414,11 @@ export const useTransit = create<TransitState>()((set, get) => ({
         }));
         break;
       case "stages-reset":
-        set({ stages: idleStages() });
+        // A replay rewinds the map: hide earned tickets until re-earned.
+        set({ stages: idleStages(), ticketsOut: false });
         break;
       case "attempt":
-        set({ attempt: e.n });
+        set((s) => ({ attempt: e.n, maxAttempt: Math.max(s.maxAttempt, e.n) }));
         break;
       case "code":
         set({ latestVersion: e.version, viewingVersion: e.version });
@@ -301,18 +429,27 @@ export const useTransit = create<TransitState>()((set, get) => ({
       case "score":
         set((s) => ({ score: e.value, scoreHistory: [...s.scoreHistory, e.value] }));
         break;
+      case "score-reset":
+        // Scrub replay: REPLACE the path, don't append a second one.
+        set({ score: e.value, scoreHistory: e.value === 0 ? [] : [e.value] });
+        break;
       case "error":
         set({ errorText: e.text });
         break;
       case "alert":
         set((s) => ({ alerts: [...s.alerts.slice(-5), e.text] }));
         break;
-      case "memory-add":
-        set((s) => ({
-          memNodes: [...s.memNodes, ...e.nodes.filter((n) => !s.memNodes.some((m) => m.id === n.id))],
-          memLinks: [...s.memLinks, ...e.links],
-        }));
+      case "memory-add": {
+        const linkKey = (l: MemoryLink) => `${l.source}|${l.target}|${l.label}`;
+        set((s) => {
+          const known = new Set(s.memLinks.map(linkKey));
+          return {
+            memNodes: [...s.memNodes, ...e.nodes.filter((n) => !s.memNodes.some((m) => m.id === n.id))],
+            memLinks: [...s.memLinks, ...e.links.filter((l) => !known.has(linkKey(l)))],
+          };
+        });
         break;
+      }
       case "carriages":
         set({ carriages: e.states });
         break;
@@ -346,5 +483,12 @@ export const useTransit = create<TransitState>()((set, get) => ({
         }));
         break;
     }
+    try {
+      saveSnapshot(get());
+    } catch {
+      /* persistence must never break the run */
+    }
   },
-}));
+};
+});
+

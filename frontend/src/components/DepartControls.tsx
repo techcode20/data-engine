@@ -1,4 +1,4 @@
-import { Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { OctagonX, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { whistle } from "../lib/sound";
 import { useTransit } from "../store";
 import type { Speed } from "../simulation/types";
@@ -10,6 +10,7 @@ export function DepartControls() {
   const phase = useTransit((s) => s.phase);
   const paused = useTransit((s) => s.paused);
   const togglePause = useTransit((s) => s.togglePause);
+  const cancelRun = useTransit((s) => s.cancelRun);
   const reset = useTransit((s) => s.reset);
   const depart = useTransit((s) => s.depart);
   const speed = useTransit((s) => s.speed);
@@ -28,7 +29,7 @@ export function DepartControls() {
         <button
           onClick={go}
           disabled={!file || phase === "running"}
-          className="rounded-xl border-[3px] border-[#141210] bg-[#e3342f] px-8 py-3 text-lg font-bold tracking-wide text-white shadow-[4px_4px_0_#141210] transition hover:brightness-105 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-xl border-[3px] border-[#141210] bg-[#c62828] px-8 py-3 text-lg font-bold tracking-wide text-white shadow-[4px_4px_0_#141210] transition hover:brightness-105 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-40"
         >
           {phase === "running" ? "● RUNNING" : "DEPART"}
         </button>
@@ -48,6 +49,16 @@ export function DepartControls() {
             >
               <RotateCcw size={15} /> Reset
             </button>
+            {phase === "running" && (
+              <button
+                onClick={cancelRun}
+                aria-label="Cancel run"
+                title="Stop the run now — visited stations keep their state"
+                className="inline-flex items-center gap-1.5 rounded-xl border-[3px] border-[#141210] bg-[#c62828] px-3.5 py-2 text-sm font-bold text-white shadow-[3px_3px_0_#141210] transition active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+              >
+                <OctagonX size={15} /> Cancel
+              </button>
+            )}
           </>
         )}
         <div className="flex items-center gap-2" role="group" aria-label="Speed lever">

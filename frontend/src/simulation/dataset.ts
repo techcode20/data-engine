@@ -33,8 +33,8 @@ export const CARRIAGES: CarriageInfo[] = [
     id: 1,
     label: "Batch A · rows 1–2",
     rows: [
-      { values: ["201", "Ada Lovelace", "2024-02-01", "36", "ada@analytical.io", "PRO", "$79.99"], fate: "kept", reason: "clean after casing + currency strip" },
-      { values: ["202", "grace hopper", "02/14/2024", "85", "GRACE@NAVY.MIL", "pro", "79.99"], fate: "kept", reason: "name cased, date parsed via format='mixed', plan uppercased" },
+      { values: ["201", "Ada Lovelace", "2024-02-01", "36", "ada@analytical.io", "PRO", "$79.99"], fate: "kept", reason: "clean after currency strip", cleaned: ["201", "Ada Lovelace", "2024-02-01", "36", "ada@analytical.io", "PRO", "79.99"] },
+      { values: ["202", "grace hopper", "02/14/2024", "85", "GRACE@NAVY.MIL", "pro", "79.99"], fate: "kept", reason: "email lowercased, plan uppercased, date parsed via format='mixed' (name kept as-is)", cleaned: ["202", "grace hopper", "2024-02-14", "85", "grace@navy.mil", "PRO", "79.99"] },
     ],
   },
   {
@@ -50,7 +50,7 @@ export const CARRIAGES: CarriageInfo[] = [
     label: "Batch C · rows 5–6",
     rows: [
       { values: ["205", "John von Neumann", "not-a-date", "-4", "john@ias.edu", "ULTRA", "-12"], fate: "dropped", reason: "bad date, negative age, bad plan, negative revenue" },
-      { values: ["206", "Margaret Hamilton", "2024-06-11", "87", "margaret@mit.edu", "BASIC", "$1,200"], fate: "kept", reason: "currency comma stripped → 1200.0" },
+      { values: ["206", "Margaret Hamilton", "2024-06-11", "87", "margaret@mit.edu", "BASIC", "$1,200"], fate: "kept", reason: "currency comma stripped → 1200.0", cleaned: ["206", "Margaret Hamilton", "2024-06-11", "87", "margaret@mit.edu", "BASIC", "1200.0"] },
     ],
   },
   {

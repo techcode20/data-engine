@@ -113,7 +113,7 @@ export class TransitEngine {
     this.emit({ type: "attempt", n });
     this.emit({ type: "code", version: snap.codeVersion });
     this.emit({ type: "checks", items: [] });
-    this.emit({ type: "score", value: snap.score });
+    this.emit({ type: "score-reset", value: snap.score });
     this.emit({ type: "error", text: null });
     this.emit({ type: "disruption", on: false });
     this.emit({ type: "reroute", on: snap.rerouteOn });

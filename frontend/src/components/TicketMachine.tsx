@@ -72,15 +72,17 @@ def test_expected_survivors():
 `;
 
 const TICKETS = [
-  { name: "pipeline.py", content: PIPELINE_PY, color: "#e3342f" },
+  { name: "pipeline.py", content: PIPELINE_PY, color: "#b91c1c" },
   { name: "schema.py", content: SCHEMA_PY, color: "#2563eb" },
-  { name: "tests.py", content: TESTS_PY, color: "#16a34a" },
+  { name: "tests.py", content: TESTS_PY, color: "#15803d" },
 ];
 
 /** Ticket machine: three printed tickets slide out when the run completes. */
 export function TicketMachine() {
   const ticketsOut = useTransit((s) => s.ticketsOut);
   const phase = useTransit((s) => s.phase);
+  const file = useTransit((s) => s.file);
+  const isDemo = !file || file.kind === "sample";
   return (
     <div className="rounded-2xl border-[3px] border-[#141210] bg-[#141210] p-4 text-[#f6f3ea] shadow-[6px_6px_0_rgba(20,18,16,0.25)]">
       <p className="font-board flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-[#f59e0b]">
@@ -91,6 +93,13 @@ export function TicketMachine() {
           {phase === "idle" ? "Tickets print when a run completes all turnstiles." : "Printing… hold your ticket until validation clears."}
         </p>
       ) : (
+        <>
+          {!isDemo && (
+            <p role="note" className="font-board mt-2 rounded-lg border-2 border-dashed border-[#f59e0b] p-2 text-[11px] text-[#fcd34d]">
+              Demo timetable: these tickets describe the sample dataset, not “{file?.name}”. Your upload was parsed for
+              counts only — the simulation always rides the demo consist.
+            </p>
+          )}
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <AnimatePresence>
             {TICKETS.map((t, i) => (
@@ -115,8 +124,9 @@ export function TicketMachine() {
             ))}
           </AnimatePresence>
         </div>
+        </>
       )}
-      <p className="mt-3 font-board text-[11px] text-[#a8a091]">
+      <p className="mt-3 font-board text-[11px] text-[#6b6455]">
         {DATASET_META.rowsIn} boarded · {DATASET_META.rowsOut} arrived · {DATASET_META.rowsIn - DATASET_META.rowsOut} shunted to REJECTED
       </p>
     </div>

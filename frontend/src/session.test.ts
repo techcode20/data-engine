@@ -10,7 +10,7 @@ describe("upload gate (V2)", () => {
     const s = useTransit.getState();
     // Today: accepted without complaint (file set, no error).
     expect(s.file).toBeNull();
-    expect(s.fileError ?? "").toMatch(/too large/i);
+    expect(s.fileError ?? "").toMatch(/cap/i);
   }, 60000);
 });
 

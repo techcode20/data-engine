@@ -3,17 +3,17 @@ export function CodeDiff({ oldCode, newCode, from, to }: { oldCode: string; newC
   const hunks = diff(oldCode, newCode);
   return (
     <div className="overflow-hidden rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] shadow-[5px_5px_0_#141210]">
-      <p className="border-b-[3px] border-[#141210] bg-[#e3342f] px-3 py-1.5 font-board text-[11px] font-bold tracking-widest text-white">
+      <p className="border-b-[3px] border-[#141210] bg-[#b91c1c] px-3 py-1.5 font-board text-[11px] font-bold tracking-widest text-white">
         WORK ORDER · v{from} → v{to} · REPAIR DEPOT
       </p>
       <pre className="font-board max-h-[380px] overflow-auto p-3 text-[12px] leading-[1.7]">
         <code>
           {hunks.map((h, i) => (
             <span key={i} className={`block rounded px-1 ${h.kind === "add" ? "bg-[#16a34a]/15" : h.kind === "del" ? "bg-[#e3342f]/10" : ""}`}>
-              <span className="mr-3 inline-block w-14 select-none text-right text-[#a8a091]">
+              <span className="mr-3 inline-block w-14 select-none text-right text-[#57534e]">
                 {h.oldNo ?? ""} {h.newNo ?? ""}
               </span>
-              <span className={`mr-2 select-none font-bold ${h.kind === "add" ? "text-[#16a34a]" : h.kind === "del" ? "text-[#e3342f]" : "text-[#a8a091]"}`}>
+              <span className={`mr-2 select-none font-bold ${h.kind === "add" ? "text-[#15803d]" : h.kind === "del" ? "text-[#b91c1c]" : "text-[#57534e]"}`}>
                 {h.kind === "add" ? "+" : h.kind === "del" ? "−" : " "}
               </span>
               <span>{h.text || " "}</span>

@@ -1,5 +1,6 @@
 import { Minus, Plus, Scan, Video, VideoOff } from "lucide-react";
-import { useEffect, useRef, type ReactNode, type WheelEvent } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import { markMapDragged } from "../lib/mapGesture";
 import { engineRef, useTransit } from "../store";
 import { DESKTOP_VB, MOBILE_VB } from "../transit/mapConfig";
 
@@ -45,14 +46,37 @@ export function MapViewport({ children }: Props) {
     return { x: clientX - r.left, y: clientY - r.top, w: r.width, h: r.height };
   };
 
-  const onWheel = (e: WheelEvent<SVGSVGElement>) => {
-    const p = svgPoint(e.clientX, e.clientY);
-    zoomAt(p.x, p.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
-  };
+  // (Wheel zoom lives in the native non-passive listener above —
+  // React's delegated wheel handlers are passive and can't preventDefault.)
 
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handler = (e: globalThis.WheelEvent) => {
+      // Plain wheel scrolls the PAGE (trap nothing); Ctrl/Cmd+wheel zooms.
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const r = svg.getBoundingClientRect();
+      const v = view.current;
+      const cx = e.clientX - r.left;
+      const cy = e.clientY - r.top;
+      const k2 = Math.min(4, Math.max(0.6, v.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+      const s = k2 / v.k;
+      v.x = cx - (cx - v.x) * s;
+      v.y = cy - (cy - v.y) * s;
+      v.k = k2;
+      const g = gRef.current;
+      if (g) g.setAttribute("transform", `translate(${v.x} ${v.y}) scale(${v.k})`);
+    };
+    svg.addEventListener("wheel", handler, { passive: false });
+    return () => svg.removeEventListener("wheel", handler);
+  }, []);
+
+  const downPos = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    downPos.current = { x: e.clientX, y: e.clientY };
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       pinchD0.current = Math.hypot(a.x - b.x, a.y - b.y);
@@ -67,7 +91,10 @@ export function MapViewport({ children }: Props) {
       v.x += e.clientX - prev.x;
       v.y += e.clientY - prev.y;
       apply();
-      if (follow) setFollow(false);
+      if (downPos.current && Math.hypot(e.clientX - downPos.current.x, e.clientY - downPos.current.y) > 6) {
+        markMapDragged();
+        if (follow) setFollow(false);
+      }
     } else if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
@@ -84,8 +111,10 @@ export function MapViewport({ children }: Props) {
   };
 
   // Follow-train camera: centers the engine's live train position.
+  // Skipped while idle — the parked train sits offscreen and would yank the view.
+  const phase = useTransit((s) => s.phase);
   useEffect(() => {
-    if (!follow) {
+    if (!follow || phase === "idle") {
       cancelAnimationFrame(raf.current);
       return;
     }
@@ -106,7 +135,7 @@ export function MapViewport({ children }: Props) {
     };
     raf.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf.current);
-  }, [follow, vb.w, vb.h]);
+  }, [follow, phase, vb.w, vb.h]);
 
   // Reset view when layout flips.
   useEffect(() => {
@@ -119,11 +148,10 @@ export function MapViewport({ children }: Props) {
       <svg
         ref={svgRef}
         viewBox={`0 0 ${vb.w} ${vb.h}`}
-        className="block h-[420px] w-full touch-none select-none sm:h-[520px]"
-        role="application"
-        aria-label="PipelineForge transit map. Drag to pan, scroll to zoom."
+        className="block h-[420px] w-full touch-pan-y select-none sm:h-[520px]"
+        role="region"
+        aria-label="PipelineForge transit map. Drag to pan, Ctrl-scroll or pinch to zoom."
         tabIndex={0}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}

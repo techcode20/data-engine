@@ -30,9 +30,23 @@ test("focused controls show a visible focus indicator", async ({ page }) => {
     "no :focus-visible rule in served CSS",
   ).toBe(true);
 
-  // 2. Computed style level: focusing DEPART must produce a visible cue.
+  // 2. Computed style level: reach DEPART by real keyboard Tab presses —
+  // programmatic .focus() does not match :focus-visible in Chrome, so only
+  // genuine keyboard navigation proves the ring is visible. (The sample is
+  // already loaded above, so Tab starts its journey from the top.)
+  let label = "";
+  for (let i = 0; i < 80; i++) {
+    await page.keyboard.press("Tab");
+    label =
+      (await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el) return "";
+        return el.getAttribute("aria-label") ?? el.textContent ?? "";
+      })) ?? "";
+    if (label.trim() === "DEPART") break;
+  }
+  expect(label.trim(), "could not reach DEPART by keyboard").toBe("DEPART");
   const depart = page.getByRole("button", { name: "DEPART" });
-  await depart.focus();
   const style = await depart.evaluate((el) => {
     const cs = getComputedStyle(el);
     return { outlineStyle: cs.outlineStyle, outlineWidth: cs.outlineWidth };
