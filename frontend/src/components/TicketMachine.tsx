@@ -82,7 +82,18 @@ export function TicketMachine() {
   const ticketsOut = useTransit((s) => s.ticketsOut);
   const phase = useTransit((s) => s.phase);
   const file = useTransit((s) => s.file);
-  const isDemo = !file || file.kind === "sample";
+  const liveMode = useTransit((s) => s.liveMode);
+  const live = useTransit((s) => s.live);
+  const attempt = useTransit((s) => s.attempt);
+  const score = useTransit((s) => s.score);
+  const liveActive = liveMode && live && file && file.kind !== "sample";
+  const isDemo = !liveActive && (!file || file.kind === "sample");
+  const liveTickets = liveActive
+    ? [
+        { name: `${file!.name.replace(/\.[^.]+$/, "")}.cleaned.csv`, href: `${live!.base}/runs/${live!.runId}/cleaned.csv`, color: "#15803d", blurb: "validated rows — straight from the backend" },
+        { name: "pipeline.py", href: `${live!.base}/runs/${live!.runId}/pipeline.py`, color: "#b91c1c", blurb: "the validated clean() that ran — replay it anywhere" },
+      ]
+    : [];
   return (
     <div className="rounded-2xl border-[3px] border-[#141210] bg-[#141210] p-4 text-[#f6f3ea] shadow-[6px_6px_0_rgba(20,18,16,0.25)]">
       <p className="font-board flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-[#f59e0b]">
@@ -92,6 +103,35 @@ export function TicketMachine() {
         <p className="mt-2 text-sm text-[#a8a091]">
           {phase === "idle" ? "Tickets print when a run completes all turnstiles." : "Printing… hold your ticket until validation clears."}
         </p>
+      ) : liveActive ? (
+        <>
+          <p role="note" className="font-board mt-2 rounded-lg border-2 border-dashed border-[#15803d] p-2 text-[11px] text-[#bbf7d0]">
+            Live consist “{file?.name}” — attempt {attempt}, score {score}. These files came off your backend run, not the demo timetable.
+          </p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <AnimatePresence>
+              {liveTickets.map((t, i) => (
+                <motion.a
+                  key={t.name}
+                  href={t.href}
+                  download
+                  initial={{ y: -70, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: i * 0.22, type: "spring", stiffness: 160, damping: 17 }}
+                  className="group rounded-xl border-2 border-dashed border-[#f6f3ea]/40 bg-[#fffdf6] p-3 text-left text-[#141210] transition hover:border-solid"
+                >
+                  <span className="font-board inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white" style={{ background: t.color }}>
+                    {t.name}
+                  </span>
+                  <span className="font-board mt-2 block text-[11px] text-[#6b6455]">{t.blurb}</span>
+                  <span className="mt-1.5 flex items-center gap-1 text-xs font-bold group-hover:underline">
+                    <Download size={12} aria-hidden /> Collect ticket
+                  </span>
+                </motion.a>
+              ))}
+            </AnimatePresence>
+          </div>
+        </>
       ) : (
         <>
           {!isDemo && (
@@ -127,7 +167,9 @@ export function TicketMachine() {
         </>
       )}
       <p className="mt-3 font-board text-[11px] text-[#6b6455]">
-        {DATASET_META.rowsIn} boarded · {DATASET_META.rowsOut} arrived · {DATASET_META.rowsIn - DATASET_META.rowsOut} shunted to REJECTED
+        {liveActive
+          ? `live run ${live!.runId} · attempt ${attempt} · score ${score}`
+          : `${DATASET_META.rowsIn} boarded · ${DATASET_META.rowsOut} arrived · ${DATASET_META.rowsIn - DATASET_META.rowsOut} shunted to REJECTED`}
       </p>
     </div>
   );

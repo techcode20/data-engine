@@ -100,7 +100,7 @@ export type EngineEvent =
   | { type: "stage"; id: StationId; status: StageStatus; durationMs?: number | null }
   | { type: "stages-reset" }
   | { type: "attempt"; n: number }
-  | { type: "code"; version: number }
+  | { type: "code"; version: number; source?: string }
   | { type: "checks"; items: CheckItem[] }
   | { type: "score"; value: number }
   | { type: "score-reset"; value: number }
@@ -109,9 +109,10 @@ export type EngineEvent =
   | { type: "alert"; text: string }
   | { type: "memory-add"; nodes: MemoryNode[]; links: MemoryLink[] }
   | { type: "carriages"; states: CarriageState[] }
+  | { type: "rows"; columns: string[]; rows: BatchRow[] }
   | { type: "disruption"; on: boolean; label?: string }
   | { type: "reroute"; on: boolean }
   | { type: "crew"; visible: boolean }
   | { type: "board"; next: string; status: string }
   | { type: "tickets" }
-  | { type: "done" };
+  | { type: "done"; attempts?: number; status?: string };

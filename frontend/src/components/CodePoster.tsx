@@ -30,15 +30,18 @@ export function CodePoster() {
   const viewingVersion = useTransit((s) => s.viewingVersion);
   const setViewingVersion = useTransit((s) => s.setViewingVersion);
   const phase = useTransit((s) => s.phase);
+  const codeSources = useTransit((s) => s.codeSources);
   const [showDiff, setShowDiff] = useState(true);
-  const code = CODE_VERSIONS[viewingVersion - 1] ?? CODE_VERSIONS[0];
-  const prev = CODE_VERSIONS[viewingVersion - 2];
+  const versions = Array.from({ length: Math.max(CODE_VERSIONS.length, latestVersion) }, (_, i) => i + 1);
+  const liveCode = codeSources[viewingVersion];
+  const code = liveCode ?? CODE_VERSIONS[viewingVersion - 1] ?? CODE_VERSIONS[0];
+  const prevLive = codeSources[viewingVersion - 1];
+  const prev = prevLive ?? CODE_VERSIONS[viewingVersion - 2];
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2" role="tablist" aria-label="Timetable versions">
-        {CODE_VERSIONS.map((_, i) => {
-          const v = i + 1;
+        {versions.map((v) => {
           const available = v <= latestVersion;
           return (
             <button

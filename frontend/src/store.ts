@@ -1,8 +1,11 @@
 import { create } from "zustand";
+import { ApiBackend, API_BASE } from "./simulation/api";
 import { TransitEngine, type Speed } from "./simulation/engine";
-import { ATTEMPTS, baseMemory } from "./simulation/script";
+import { baseMemory } from "./simulation/script";
+import { CARRIAGES, COLUMNS } from "./simulation/dataset";
 import type { StationId } from "./transit/mapConfig";
 import type {
+  BatchRow,
   CarriageState,
   CheckItem,
   EngineEvent,
@@ -32,11 +35,18 @@ export interface StoredLog {
 /** 10 MB — anything bigger would freeze the tab in f.text()/JSON.parse. */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+/** Default rules prefilled for live uploads (editable at the gate). */
+export const DEFAULT_LIVE_RULES = "Every column is required; drop rows with missing values.";
+
 const SNAP_KEY = "pf-transit-state";
-const SNAP_VERSION = 1;
+const SNAP_VERSION = 2;
+const LIVE_KEY = "pf-transit-live";
 
 function saveSnapshot(s: TransitState) {
   try {
+    const codeSources = Object.fromEntries(
+      Object.entries(s.codeSources).slice(-6),
+    );
     sessionStorage.setItem(
       SNAP_KEY,
       JSON.stringify({
@@ -63,6 +73,12 @@ function saveSnapshot(s: TransitState) {
         viewingVersion: s.viewingVersion,
         latestVersion: s.latestVersion,
         chaosStall: s.chaosStall,
+        liveMode: s.liveMode,
+        rules: s.rules,
+        live: s.live,
+        codeSources,
+        liveColumns: s.liveColumns,
+        liveRows: s.liveRows,
       }),
     );
   } catch {
@@ -120,9 +136,17 @@ interface TransitState {
   logFilter: string;
   logPaused: boolean;
   memoryQuery: string;
+  liveMode: boolean;
+  rules: string;
+  live: { runId: string; base: string } | null;
+  codeSources: Record<number, string>;
+  liveColumns: string[];
+  liveRows: BatchRow[];
 
   loadSample: () => void;
   loadFile: (f: File) => Promise<void>;
+  setRules: (r: string) => void;
+  setLiveMode: (b: boolean) => void;
   depart: () => void;
   togglePause: () => void;
   cancelRun: () => void;
@@ -154,15 +178,46 @@ const passedStages = (): Record<StationId, StageState> =>
 
 let logSeq = 0;
 let engine: TransitEngine | null = null;
+let liveEngine: ApiBackend | null = null;
+/** Raw bytes for a live POST (zustand state stays serializable). */
+let pendingFile: File | null = null;
 
-function getEngine(apply: (e: EngineEvent) => void): TransitEngine {
+function readLiveMode(): boolean {
+  try {
+    const param = new URLSearchParams(window.location.search).get("live");
+    if (param === "1") return true;
+    if (param === "0") return false;
+    return localStorage.getItem(LIVE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Synthesize upload bytes for the sample dataset so it can ride live. */
+export function sampleAsFile(): File {
+  const cell = (v: string) =>
+    /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  const header = [...COLUMNS].map(cell).join(",");
+  const lines = CARRIAGES.flatMap((c) => c.rows.map((r) => r.values.map(cell).join(",")));
+  return new File([[header, ...lines].join("\n")], "ridership_customers_messy.csv", {
+    type: "text/csv",
+  });
+}
+
+function getEngine(apply: (e: EngineEvent) => void): TransitEngine | ApiBackend {
+  const live = useTransit.getState().liveMode;
+  if (live) {
+    if (!liveEngine) liveEngine = new ApiBackend();
+    liveEngine.onEvent(apply);
+    return liveEngine;
+  }
   if (!engine) engine = new TransitEngine();
   engine.onEvent(apply);
   return engine;
 }
 
-export function engineRef(): TransitEngine | null {
-  return engine;
+export function engineRef(): TransitEngine | ApiBackend | null {
+  return useTransit.getState().liveMode ? liveEngine : engine;
 }
 
 export const useTransit = create<TransitState>()((set, get) => {
@@ -213,12 +268,30 @@ export const useTransit = create<TransitState>()((set, get) => {
   logFilter: "ALL",
   logPaused: false,
   memoryQuery: "",
+  liveMode: restored?.liveMode ?? readLiveMode(),
+  rules: restored?.rules ?? DEFAULT_LIVE_RULES,
+  live: restored?.live ?? null,
+  codeSources: restored?.codeSources ?? {},
+  liveColumns: restored?.liveColumns ?? [],
+  liveRows: restored?.liveRows ?? [],
 
-  loadSample: () =>
+  loadSample: () => {
+    pendingFile = null; // live sample rides synthesized bytes, not stale uploads
     set({
       file: { name: "ridership_customers_messy.csv", size: 2156, rows: 8, cols: 7, kind: "sample" },
       fileError: null,
-    }),
+    });
+  },
+
+  setRules: (r) => set({ rules: r }),
+  setLiveMode: (b) => {
+    try {
+      localStorage.setItem(LIVE_KEY, b ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    set({ liveMode: b });
+  },
 
   loadFile: async (f: File) => {
     const lower = f.name.toLowerCase();
@@ -254,6 +327,7 @@ export const useTransit = create<TransitState>()((set, get) => {
         file: { name: f.name, size: f.size, rows, cols, kind: isCsv ? "csv" : "json" },
         fileError: null,
       });
+      pendingFile = f;
     } catch {
       set({ fileError: `Could not read "${f.name}" at the gate — is it valid ${isCsv ? "CSV" : "JSON"}?` });
     }
@@ -261,10 +335,35 @@ export const useTransit = create<TransitState>()((set, get) => {
 
   depart: () => {
     const e = getEngine((ev) => get().applyEvent(ev));
-    e.stop();
-    e.setSpeed(get().speed);
+    const live = get().liveMode;
+    if (live) {
+      const file = get().file;
+      const rules = get().rules.trim();
+      if (!file) {
+        set({ fileError: "Punch a ticket first — a live run needs a file." });
+        return;
+      }
+      if (!rules) {
+        set({ fileError: "Live runs need business rules — write a sentence at the gate." });
+        return;
+      }
+      const bytes = file.kind === "sample" ? sampleAsFile() : pendingFile;
+      if (!bytes) {
+        set({ fileError: `No bytes for "${file.name}" — re-drop the file at the gate.` });
+        return;
+      }
+      e.stop();
+      (e as ApiBackend).setPayload(bytes, rules, 3);
+      (e as ApiBackend).onRunId = (id) => {
+        set({ live: { runId: id, base: API_BASE } });
+        saveSnapshot(get());
+      };
+    } else {
+      e.stop();
+      (e as TransitEngine).setSpeed(get().speed);
+      (e as TransitEngine).setChaosStall(get().chaosStall);
+    }
     e.setMobile(get().mobile);
-    e.setChaosStall(get().chaosStall);
     e.setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     logSeq = 0;
     const mem = baseMemory();
@@ -293,6 +392,10 @@ export const useTransit = create<TransitState>()((set, get) => {
       paused: false,
       selectedStation: null,
       selectedCarriage: null,
+      live: null, // replaced when the backend answers with a run id
+      codeSources: {},
+      liveColumns: [],
+      liveRows: [],
     });
     e.start();
     saveSnapshot(get());
@@ -340,6 +443,8 @@ export const useTransit = create<TransitState>()((set, get) => {
 
   reset: () => {
     engine?.stop();
+    liveEngine?.stop();
+    pendingFile = null;
     logSeq = 0;
     try {
       sessionStorage.removeItem(SNAP_KEY);
@@ -372,6 +477,10 @@ export const useTransit = create<TransitState>()((set, get) => {
       paused: false,
       selectedStation: null,
       selectedCarriage: null,
+      live: null,
+      codeSources: {},
+      liveColumns: [],
+      liveRows: [],
     });
   },
 
@@ -427,7 +536,11 @@ export const useTransit = create<TransitState>()((set, get) => {
         set((s) => ({ attempt: e.n, maxAttempt: Math.max(s.maxAttempt, e.n) }));
         break;
       case "code":
-        set({ latestVersion: e.version, viewingVersion: e.version });
+        set((s) => ({
+          latestVersion: e.version,
+          viewingVersion: e.version,
+          codeSources: e.source ? { ...s.codeSources, [e.version]: e.source } : s.codeSources,
+        }));
         break;
       case "checks":
         set({ checks: e.items });
@@ -459,6 +572,9 @@ export const useTransit = create<TransitState>()((set, get) => {
       case "carriages":
         set({ carriages: e.states });
         break;
+      case "rows":
+        set({ liveColumns: e.columns, liveRows: e.rows });
+        break;
       case "disruption":
         set({ disruption: e.on ? (e.label ?? "Signal fault") : null });
         break;
@@ -484,8 +600,8 @@ export const useTransit = create<TransitState>()((set, get) => {
         set((s) => ({
           phase: "done",
           paused: false,
-          attempt: 3,
-          scoreHistory: s.scoreHistory.length ? s.scoreHistory : [ATTEMPTS[2].score],
+          attempt: e.attempts ?? 3,
+          scoreHistory: s.scoreHistory.length ? s.scoreHistory : [s.score],
         }));
         break;
     }

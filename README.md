@@ -135,6 +135,16 @@ This builds `dashboard.html` from your run history (pass rates, tokens, latest r
 
 For the full interactive experience, see `frontend/` — **PipelineForge Transit**, a living-subway-map React app that plays a scripted run of this exact pipeline (ticket gate → 7 stations → turnstile validation → repair reroutes → archive cards → export tickets). `cd frontend && npm install && npm run dev`.
 
+## Live backend (upload → real clean → download)
+
+The frontend's DEMO timetable is scripted. Flip the **LIVE** switch (or open with `?live=1`) to ride the genuine pipeline instead:
+
+```
+python -m uvicorn backend_api:app --port 8000   # localhost only; frontend expects :8000
+```
+
+Then upload a CSV/JSON at the gate, write business rules in the box, and press DEPART: stages light from real `process_one` hooks, scores are row pass rates, the magnifier shows your rows, the poster shows the actual generated code, and the ticket machine serves `cleaned.csv` + `pipeline.py` downloads off your run. One live run at a time (a second DEPART gets 409); Cancel stops between steps. `script.ts` stays as the offline demo and regression net. API docs for contributors live in `backend_api.py`'s docstring.
+
 Cut a release after merging a feature:
 
 ```

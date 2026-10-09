@@ -95,14 +95,34 @@ def _resolve_emit_path(emit_pipeline, file_path, output_path) -> str | None:
     return str(emit_pipeline)
 
 
+def _fire(hook, *args):
+    """Invoke an optional driver hook. Hooks must never kill the run —
+    a live dashboard is observability, not control flow."""
+    if hook is None:
+        return
+    try:
+        hook(*args)
+    except Exception as e:
+        print(f"(hook failed: {type(e).__name__}: {e})")
+
+
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
                 no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False,
-                emit_pipeline=None, sink=None, sink_if_exists="replace"):
+                emit_pipeline=None, sink=None, sink_if_exists="replace",
+                on_stage=None, on_attempt=None, on_frames=None, should_cancel=None):
+    """on_stage(stage, status): live progress (intake/schema/code/sandbox/
+    validation/repair/memory/archive × running/passed/failed).
+    on_attempt(n, info): per-attempt {code, ok, failure_cases|None,
+    failures_text|None, rows_in, rows_out, schema_json}.
+    on_frames(raw_df|None, cleaned_df|None): frame access for live downloads.
+    should_cancel(): polled each loop iteration; cooperative stop."""
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     input_hash = _input_hash(file_path, rules)
     try:
         df = ingest(file_path, pagination=pagination)
+        _fire(on_frames, df, None)
+        _fire(on_stage, "intake", "passed")
         if not no_pre_clean:
             df, pre_report = pre_clean(df)
             if not quiet:
@@ -132,8 +152,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             set_cached_schema(file_path, rules, schema_json, fingerprint)
         try:
             pandera_schema = build_pandera_schema(schema_json)
-        except ValueError as e:
-            # Cached schemas were valid when stored; reaching here means cache
+        except ValueError as e:            # Cached schemas were valid when stored; reaching here means cache
             # corruption — fail this dataset loudly instead of crashing the batch.
             print(f"❌ {file_path}: cached schema unusable: {e}")
             usage = _run_usage(file_path)
@@ -143,6 +162,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                         "input_hash": input_hash,
                         "pipeline_path": None, "sink": None,
                         "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
+        _fire(on_stage, "schema", "passed")
         cached_code = None if no_cache else get_cached_code(schema_json, rules)
         if cached_code is not None:
             print(f"♻️ {file_path}: reusing cached clean() — schema solved before, no LLM call")
@@ -151,6 +171,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         else:
             code = generate_transform_code(schema_json, rules, tag=file_path)
             used_cache = False
+        _fire(on_stage, "code", "passed")
     except Exception as e:
         # Setup-phase failure (unreadable input, injection refusal, empty model
         # response…): a FAIL result for this dataset, never a batch-killing crash.
@@ -185,6 +206,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
     attempt = 0
     success = False
     budget_stopped = False
+    cancelled = False
     cleaned_df = None
     last_frame = None  # best-effort partial output on terminal failure
     seen_code = {hashlib.md5(code.encode("utf-8")).hexdigest()}
@@ -206,10 +228,25 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         seen_code.add(digest)
         return True
 
+    def _attempt_info(ok, failure_cases=None, failures_text=None, rows_out=0, frame=None):
+        return {"code": code, "ok": ok, "failure_cases": failure_cases,
+                "failures_text": failures_text, "rows_in": len(df),
+                "rows_out": rows_out, "schema_json": schema_json, "frame": frame}
+
     while attempt < retries and not success:
+        if should_cancel is not None:
+            try:
+                if should_cancel():
+                    cancelled = True
+                    break
+            except Exception as e:
+                print(f"(cancel check failed: {type(e).__name__}: {e})")
         attempt += 1
+        if attempt > 1:
+            _fire(on_stage, "repair", "passed")
         if not quiet:
             print(f"\n=== {file_path} — ATTEMPT {attempt} ===")
+        _fire(on_stage, "sandbox", "running")
         cleaned_df, exec_error = run_generated_code(code, df)
 
         if cleaned_df is not None and not isinstance(cleaned_df, pd.DataFrame):
@@ -227,6 +264,11 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             # Redacted at rest (tracebacks leak paths/values); the repair
             # prompt below keeps the full text for same-dataset debugging.
             log_fix(file_path, attempt, redact_execution_error(exec_error), code)
+            _fire(on_stage, "sandbox", "failed")
+            _fire(on_stage, "memory", "running")
+            _fire(on_stage, "memory", "passed")
+            _fire(on_attempt, attempt, _attempt_info(False, failures_text=exec_error))
+            _fire(on_stage, "repair", "running")
             if _over_budget(file_path, max_cost_usd):
                 print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
                 budget_stopped = True
@@ -240,6 +282,8 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 break
             continue
 
+        _fire(on_stage, "sandbox", "passed")
+        _fire(on_stage, "validation", "running")
         ok, failures = validate(cleaned_df, pandera_schema)
         if ok:
             sanity_issues = sanity_checks(df, cleaned_df, max_drop_fraction=max_drop_fraction)
@@ -249,11 +293,24 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         if ok:
             print(f"✅ {file_path}: VALIDATION PASSED (attempt {attempt})")
             success = True
+            _fire(on_stage, "validation", "passed")
+            _fire(on_attempt, attempt, _attempt_info(True, rows_out=len(cleaned_df),
+                                                       frame=cleaned_df))
         else:
             print("Validation failed. Asking model to fix it...")
             # Persist the REDACTED failure (shapes, not customer cell values);
             # the live fix prompt below keeps full values for same-dataset repair.
             log_fix(file_path, attempt, redact_failure_cases(failures), code)
+            _fire(on_stage, "validation", "failed")
+            _fire(on_stage, "memory", "running")
+            _fire(on_stage, "memory", "passed")
+            cases = failures if isinstance(failures, pd.DataFrame) else None
+            text = None if cases is not None else str(failures)
+            _fire(on_attempt, attempt, _attempt_info(False, failure_cases=cases,
+                                                    failures_text=text,
+                                                    rows_out=len(cleaned_df),
+                                                    frame=cleaned_df))
+            _fire(on_stage, "repair", "running")
             if _over_budget(file_path, max_cost_usd):
                 print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
                 budget_stopped = True
@@ -266,14 +323,21 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             if not _repair(code, str(failures)):
                 break
 
-    if not success and not budget_stopped and not strict:
+    if not success and not budget_stopped and not strict and not cancelled:
         print(f"❌ {file_path}: gave up after {attempt} attempt(s)")
+    if cancelled:
+        print(f"🛑 {file_path}: cancelled by operator after {attempt} attempt(s)")
 
     rows_out = len(last_frame) if isinstance(last_frame, pd.DataFrame) else 0
+    # Live downloads serve VALIDATED frames only: an unvalidated last frame
+    # is evidence for partial CSV output, never a cleaned download.
+    _fire(on_frames, df, cleaned_df
+          if success and isinstance(cleaned_df, pd.DataFrame) else None)
     pipeline_path = None
     sink_info = None
     sink_error = None
-    if success:
+    if success and not cancelled:
+        _fire(on_stage, "archive", "running")
         if not no_cache:
             set_cached_code(schema_json, rules, code)
         if output_path:
@@ -303,6 +367,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 write_pipeline(emit_to, text)
                 pipeline_path = emit_to
                 print(f"Wrote pipeline {emit_to}")
+        _fire(on_stage, "archive", "passed" if success and not cancelled else "failed")
     elif output_path and isinstance(last_frame, pd.DataFrame):
         # Terminal failure still leaves evidence: best-effort partial output.
         # No pipeline and no sink on failure — unvalidated code must never
@@ -318,14 +383,17 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         cost = f" (est. ${usage['cost_usd']:.4f})" if usage["cost_usd"] is not None else ""
         print(f"💰 {file_path}: {usage['calls']} LLM call(s), {usage['total_tokens']} tokens{cost}")
     print(f"🧾 reconciliation: {len(df)} in → {rows_out} out ({len(df) - rows_out} dropped)")
-    result = {"file": file_path, "success": success, "attempts": attempt,
+    result = {"file": file_path, "success": success and not cancelled, "attempts": attempt,
               "usage": usage, "budget_stopped": budget_stopped,
               "input_hash": input_hash,
               "pipeline_path": pipeline_path, "sink": sink_info,
+              "cancelled": cancelled,
               "rows_in": len(df), "rows_out": rows_out,
               "rows_dropped": len(df) - rows_out}
     if sink_error is not None:
         result["error"] = sink_error
+    if cancelled:
+        result["error"] = "cancelled by operator"
     return result
 
 

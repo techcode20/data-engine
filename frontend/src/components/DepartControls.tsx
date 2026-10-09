@@ -1,4 +1,4 @@
-import { Hourglass, OctagonX, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { Hourglass, OctagonX, Pause, Play, RotateCcw, Satellite, Volume2, VolumeX } from "lucide-react";
 import { whistle } from "../lib/sound";
 import { useTransit } from "../store";
 import type { Speed } from "../simulation/types";
@@ -19,6 +19,8 @@ export function DepartControls() {
   const setSound = useTransit((s) => s.setSound);
   const chaosStall = useTransit((s) => s.chaosStall);
   const setChaosStall = useTransit((s) => s.setChaosStall);
+  const liveMode = useTransit((s) => s.liveMode);
+  const setLiveMode = useTransit((s) => s.setLiveMode);
 
   const go = () => {
     if (sound) whistle();
@@ -101,6 +103,15 @@ export function DepartControls() {
           className={`rounded-xl border-[3px] border-[#141210] p-2.5 shadow-[3px_3px_0_#141210] transition active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${chaosStall ? "bg-[#e3342f] text-white" : "bg-[#fffdf6]"}`}
         >
           <Hourglass size={16} />
+        </button>
+        <button
+          onClick={() => setLiveMode(!liveMode)}
+          aria-pressed={liveMode}
+          aria-label={liveMode ? "Switch to scripted demo" : "Switch to live backend"}
+          title={liveMode ? "Live backend ON — uploads ride the real pipeline" : "Live backend OFF — scripted demo only. Needs: python -m uvicorn backend_api:app"}
+          className={`inline-flex items-center gap-1.5 rounded-xl border-[3px] border-[#141210] px-3 py-2 font-board text-xs font-bold shadow-[3px_3px_0_#141210] transition active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${liveMode ? "bg-[#15803d] text-white" : "bg-[#fffdf6]"}`}
+        >
+          <Satellite size={15} aria-hidden /> {liveMode ? "LIVE" : "DEMO"}
         </button>
       </div>
       <div className="mt-3">

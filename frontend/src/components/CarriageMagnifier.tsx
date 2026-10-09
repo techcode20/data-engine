@@ -8,7 +8,15 @@ export function CarriageMagnifier() {
   const selectedCarriage = useTransit((s) => s.selectedCarriage);
   const selectCarriage = useTransit((s) => s.selectCarriage);
   const carriages = useTransit((s) => s.carriages);
-  const car = selectedCarriage != null ? CARRIAGES[selectedCarriage] : null;
+  const liveRows = useTransit((s) => s.liveRows);
+  const liveColumns = useTransit((s) => s.liveColumns);
+  const scriptCar = selectedCarriage != null ? CARRIAGES[selectedCarriage] : null;
+  // Live runs: each sampled row rides as its own single-row carriage.
+  const liveRow = selectedCarriage != null ? liveRows[selectedCarriage] : null;
+  const car = liveRow
+    ? { label: `Live carriage ${selectedCarriage! + 1}`, rows: [liveRow] }
+    : scriptCar;
+  const columns = liveRows.length && liveColumns.length ? liveColumns : [...COLUMNS];
   const state = selectedCarriage != null ? carriages[selectedCarriage] : null;
 
   return (
@@ -55,7 +63,7 @@ export function CarriageMagnifier() {
                     <div>
                       <p className="font-board mb-1 text-[10px] font-bold tracking-widest text-[#6b6455]">RAW</p>
                       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-board text-[11px]">
-                        {COLUMNS.map((c, j) => (
+                        {columns.map((c, j) => (
                           <div key={c} className="contents">
                             <dt className="text-[#6b6455]">{c}</dt>
                             <dd className="break-all">{r.values[j] === "" ? <em className="text-[#6b6455]">∅ empty</em> : r.values[j]}</dd>
@@ -67,7 +75,7 @@ export function CarriageMagnifier() {
                       <p className="font-board mb-1 text-[10px] font-bold tracking-widest text-[#6b6455]">CLEANED</p>
                       {r.fate === "kept" && r.cleaned ? (
                         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-board text-[11px]">
-                          {COLUMNS.map((c, j) => {
+                          {columns.map((c, j) => {
                             const changed = r.cleaned[j] !== r.values[j];
                             return (
                               <div key={c} className="contents">

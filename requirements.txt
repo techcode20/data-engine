@@ -1,5 +1,5 @@
 # Pinned direct dependencies. Regenerate with:
-#   pip freeze | grep -iE "^(pandas|pandera|google-genai|python-dotenv|pyyaml|requests|pytest|pytest-cov|pyarrow)=="
+#   pip freeze | grep -iE "^(pandas|pandera|google-genai|python-dotenv|pyyaml|requests|pytest|pytest-cov|pyarrow|fastapi|uvicorn|httpx|python-multipart)=="
 # Install with: pip install -r requirements.txt
 # Audit with: pip-audit -r requirements.txt
 # pyarrow carries the sandbox result transport (parquet, never pickle).
@@ -16,3 +16,7 @@ requests==2.34.2
 pytest==9.1.1
 pytest-cov==7.1.0
 hypothesis==6.168.3
+fastapi==0.143.0
+uvicorn==0.54.0
+httpx==0.28.1
+python-multipart==0.0.32

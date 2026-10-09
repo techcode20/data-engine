@@ -17,6 +17,9 @@ export function GateHero() {
   const fileError = useTransit((s) => s.fileError);
   const loadSample = useTransit((s) => s.loadSample);
   const loadFile = useTransit((s) => s.loadFile);
+  const liveMode = useTransit((s) => s.liveMode);
+  const rules = useTransit((s) => s.rules);
+  const setRules = useTransit((s) => s.setRules);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -70,7 +73,11 @@ export function GateHero() {
           >
             <FileUp className="mx-auto" size={28} aria-hidden />
             <p className="mt-2 text-sm font-bold">Drop your file at the gate — .csv / .json</p>
-            <p className="font-board mt-1 text-[11px] text-[#6b6455]">or click to present ticket · parsed on-device, never leaves the station</p>
+            <p className="font-board mt-1 text-[11px] text-[#6b6455]">
+              {liveMode
+                ? "or click to present ticket · rides to the live backend on this machine"
+                : "or click to present ticket · parsed on-device, never leaves the station"}
+            </p>
             <input
               ref={inputRef}
               type="file"
@@ -123,6 +130,22 @@ export function GateHero() {
           )}
 
           <DepartControls />
+
+          {liveMode && (
+            <div className="mt-3">
+              <label htmlFor="live-rules" className="font-board text-[10px] font-bold tracking-widest text-[#6b6455]">
+                BUSINESS RULES — THE LIVE BACKEND CLEANS BY THESE
+              </label>
+              <textarea
+                id="live-rules"
+                value={rules}
+                onChange={(e) => setRules(e.target.value)}
+                rows={2}
+                placeholder="e.g. id is required and unique. amount must be numeric and non-negative."
+                className="mt-1 w-full rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] p-2.5 text-sm shadow-[3px_3px_0_#141210] focus:outline-none"
+              />
+            </div>
+          )}
 
           <div className="mt-3 flex justify-center">
             <RetrySigns />

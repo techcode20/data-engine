@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 describe("snapshot restore", () => {
   it("rehydrates a finished run from sessionStorage on boot", async () => {
     const snapshot = {
-      v: 1,
+      v: 2,
       file: { name: "x.csv", size: 10, rows: 2, cols: 1, kind: "csv" },
       phase: "done",
       attempt: 3,
