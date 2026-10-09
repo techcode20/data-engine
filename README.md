@@ -66,6 +66,30 @@ View historical pass rates and average retry counts per dataset:
 python trends.py
 ```
 
+## Pipeline export & warehouse sink
+
+The engine can hand back the generated `clean()` itself as a reusable script — stdlib + pandas only, no data-engine dependency, with a provenance header (source, rules, `input_hash`, schema hash) and the CSV export sanitizer baked in:
+
+```
+python engine.py --file mydata.csv --rules "..." --output cleaned.csv --emit-pipeline
+python engine.py --file mydata.csv --rules "..." --emit-pipeline pipelines/orders.py
+```
+
+The bare flag derives `cleaned.pipeline.py` next to `--output` (else `<stem>.pipeline.py`). Only validated code is exported — failed runs emit nothing, and `--dry-run` writes a draft bannered `UNVALIDATED`. Replay it anywhere pandas exists:
+
+```
+python cleaned.pipeline.py --input mydata.csv --output replayed.csv
+```
+
+Load cleaned rows straight into SQLite (v1 sink; postgres-shaped URIs are refused loudly, not silently ignored):
+
+```
+python engine.py --file mydata.csv --rules "..." --sink sqlite:///warehouse.db
+python engine.py --file mydata.csv --rules "..." --sink sqlite:///warehouse.db:orders --sink-if-exists append
+```
+
+Table defaults to the input stem (slugified); `--sink-if-exists replace|append|fail` defaults to `replace`, matching `--output` overwrite semantics. Warehouse cells stay raw — the `'=...` Excel-quote prefix is CSV-only and would corrupt stored data. A requested sink that fails fails the dataset loudly (`success=False`), never passes silently. Batch configs accept `emit_pipeline:` (path or `true` for auto), `sink:`, and `sink_if_exists:` keys.
+
 ## Cost & caching
 
 Every Gemini call is metered in `gemini_client.py` (per-dataset attribution, so batch runs stay honest). Each run prints its totals, `run_summary.json` keeps them, and `trends.py` aggregates tokens per dataset:

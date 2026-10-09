@@ -1,6 +1,6 @@
 [project]
 name = "data-engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
     "pandas", "pandera", "google-genai", "python-dotenv",
     "pyyaml", "requests", "pytest", "pytest-cov",
@@ -16,7 +16,7 @@ py-modules = [
     "engine", "ingest", "schema_inference", "schema_builder", "schema_cache",
     "code_gen", "sandbox", "_sandbox_worker", "validate", "fix_memory",
     "run_summary", "trends", "gemini_client", "pre_clean", "code_cache",
-    "dashboard",
+    "dashboard", "pipeline_emit", "sinks",
 ]
 
 [build-system]

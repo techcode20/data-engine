@@ -1,3 +1,6 @@
+## 0.4.0 - code-to-pipeline: exportable clean() + warehouse sink
+`--emit-pipeline [PATH]` exports the validated `clean()` as a standalone script (stdlib + pandas only, provenance header, export sanitizer baked in, `VALIDATED` vs `UNVALIDATED DRY-RUN` banner; nothing emitted on failure). `--sink sqlite:///WH.DB[:TABLE]` loads cleaned rows into SQLite (table defaults to input stem, `--sink-if-exists replace|append|fail`, raw cells — no Excel-quote corruption, sink failure fails loudly). Both work in batch via `emit_pipeline` / `sink` / `sink_if_exists` config keys. 12 new tests; emitted pipelines verified by executing them headlessly and replay-matching the run's CSV.
+
 ## 0.3.0 - adversarial hardening
 Sandbox is now real (AST gate + subprocess isolation + timeout kill + scrubbed env). Crash-hardening across LLM, schema, and validate paths. Prompt-injection scanning, failure redaction, formula-safe exports, SSRF/output guards. Ingestion validates encoding/delimiters/headers/sizes and reads JSON Lines. Batch survives single-dataset crashes; exit codes, partial outputs, run IDs, row reconciliation, repeat-code detection. Pinned deps (pip-audit clean), hypothesis properties, 141 tests green.
 

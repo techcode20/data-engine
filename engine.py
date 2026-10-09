@@ -15,11 +15,13 @@ from code_cache import get_cached_code, set_cached_code
 from fix_memory import log_fix
 from gemini_client import estimate_cost, reset_usage, usage_totals
 from ingest import ingest
+from pipeline_emit import check_pipeline_path, default_pipeline_path, render_pipeline, write_pipeline
 from pre_clean import format_report, pre_clean, sanitize_export_cells, smart_parse
 from run_summary import write_summary
 from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
 from schema_inference import infer_schema
+from sinks import parse_sink, write_sink
 from validate import redact_failure_cases, sanity_checks, validate
 from importlib.metadata import version as _pkg_version
 from schema_cache import get_cached_schema, set_cached_schema
@@ -82,9 +84,21 @@ def _content_fingerprint(source: str, df) -> str | None:
     return None
 
 
+def _resolve_emit_path(emit_pipeline, file_path, output_path) -> str | None:
+    """Flag value → concrete path. True/"auto" derives per-dataset (batch-safe);
+    an explicit path is used as-is (traversal-checked at write time)."""
+    if not emit_pipeline:
+        return None
+    if emit_pipeline is True or str(emit_pipeline).lower() == "auto":
+        return default_pipeline_path(file_path, output_path)
+    check_pipeline_path(emit_pipeline)
+    return str(emit_pipeline)
+
+
 def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=False, pagination="link",
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
-                no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False):
+                no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False,
+                emit_pipeline=None, sink=None, sink_if_exists="replace"):
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     input_hash = _input_hash(file_path, rules)
     try:
@@ -112,6 +126,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                         "usage": usage, "budget_stopped": False,
                         "error": f"schema rejected: {e}",
                         "input_hash": input_hash,
+                        "pipeline_path": None, "sink": None,
                         "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
         if not no_cache:
             set_cached_schema(file_path, rules, schema_json, fingerprint)
@@ -124,9 +139,10 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             usage = _run_usage(file_path)
             return {"file": file_path, "success": False, "attempts": 0,
                     "usage": usage, "budget_stopped": False,
-                    "error": f"cached schema unusable: {e}",
-                    "input_hash": input_hash,
-                    "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
+                        "error": f"cached schema unusable: {e}",
+                        "input_hash": input_hash,
+                        "pipeline_path": None, "sink": None,
+                        "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
         cached_code = None if no_cache else get_cached_code(schema_json, rules)
         if cached_code is not None:
             print(f"♻️ {file_path}: reusing cached clean() — schema solved before, no LLM call")
@@ -142,17 +158,29 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         usage = _run_usage(file_path)
         return {"file": file_path, "success": False, "attempts": 0,
                 "usage": usage, "budget_stopped": False,
-                "error": f"setup failed: {type(e).__name__}: {e}",
-                "input_hash": input_hash,
-                "rows_in": 0, "rows_out": 0, "rows_dropped": 0}
+                        "error": f"setup failed: {type(e).__name__}: {e}",
+                        "input_hash": input_hash,
+                        "pipeline_path": None, "sink": None,
+                        "rows_in": 0, "rows_out": 0, "rows_dropped": 0}
     if dry_run:
         print("\n=== DRY RUN — SCHEMA ===")
         print(schema_json)
         print("\n=== DRY RUN — GENERATED CODE ===")
         print(code)
+        pipeline_path = None
+        emit_to = _resolve_emit_path(emit_pipeline, file_path, output_path)
+        if emit_to:
+            # Draft code, never executed: bannered UNVALIDATED in the header.
+            text = render_pipeline(code, source=file_path, rules=rules,
+                                   input_hash=input_hash, schema_json=schema_json,
+                                   validated=False)
+            write_pipeline(emit_to, text)
+            pipeline_path = emit_to
+            print(f"Wrote UNVALIDATED pipeline draft {emit_to}")
         return {"file": file_path, "success": None, "attempts": 0,
                 "usage": _run_usage(file_path), "budget_stopped": False,
-                "input_hash": input_hash}
+                "input_hash": input_hash,
+                "pipeline_path": pipeline_path, "sink": None}
 
     attempt = 0
     success = False
@@ -240,6 +268,9 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         print(f"❌ {file_path}: gave up after {attempt} attempt(s)")
 
     rows_out = len(last_frame) if isinstance(last_frame, pd.DataFrame) else 0
+    pipeline_path = None
+    sink_info = None
+    sink_error = None
     if success:
         if not no_cache:
             set_cached_code(schema_json, rules, code)
@@ -247,22 +278,53 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
             _check_output_path(output_path)
             sanitize_export_cells(cleaned_df).to_csv(output_path, index=False)
             print(f"Wrote {output_path}")
+        if sink:
+            try:
+                spec = parse_sink(sink, file_path)
+                sink_info = write_sink(cleaned_df, spec, if_exists=sink_if_exists)
+                print(f"Wrote sink {sink_info['db']} :: {sink_info['table']} "
+                      f"({sink_info['rows']} rows, {sink_if_exists})")
+            except Exception as e:
+                # The warehouse load was explicitly requested: a missing sink
+                # must fail the dataset loudly, never pass silently. The
+                # pipeline emit below is skipped with it — a failed run leaves
+                # neither artifact.
+                print(f"❌ {file_path}: sink failed ({type(e).__name__}: {e})")
+                success = False
+                sink_error = f"sink failed: {type(e).__name__}: {e}"
+        if success:
+            emit_to = _resolve_emit_path(emit_pipeline, file_path, output_path)
+            if emit_to:
+                text = render_pipeline(code, source=file_path, rules=rules,
+                                       input_hash=input_hash, schema_json=schema_json,
+                                       validated=True)
+                write_pipeline(emit_to, text)
+                pipeline_path = emit_to
+                print(f"Wrote pipeline {emit_to}")
     elif output_path and isinstance(last_frame, pd.DataFrame):
         # Terminal failure still leaves evidence: best-effort partial output.
+        # No pipeline and no sink on failure — unvalidated code must never
+        # ship as a reusable artifact through the success path.
         partial = _partial_path(output_path)
         sanitize_export_cells(last_frame).to_csv(partial, index=False)
         print(f"Wrote partial output {partial} ({rows_out} rows from last attempt)")
+        if emit_pipeline or sink:
+            print(f"no pipeline/sink emitted for {file_path} (run failed)")
 
     usage = _run_usage(file_path)
     if usage["calls"]:
         cost = f" (est. ${usage['cost_usd']:.4f})" if usage["cost_usd"] is not None else ""
         print(f"💰 {file_path}: {usage['calls']} LLM call(s), {usage['total_tokens']} tokens{cost}")
     print(f"🧾 reconciliation: {len(df)} in → {rows_out} out ({len(df) - rows_out} dropped)")
-    return {"file": file_path, "success": success, "attempts": attempt,
-            "usage": usage, "budget_stopped": budget_stopped,
-            "input_hash": input_hash,
-            "rows_in": len(df), "rows_out": rows_out,
-            "rows_dropped": len(df) - rows_out}
+    result = {"file": file_path, "success": success, "attempts": attempt,
+              "usage": usage, "budget_stopped": budget_stopped,
+              "input_hash": input_hash,
+              "pipeline_path": pipeline_path, "sink": sink_info,
+              "rows_in": len(df), "rows_out": rows_out,
+              "rows_dropped": len(df) - rows_out}
+    if sink_error is not None:
+        result["error"] = sink_error
+    return result
 
 
 def _partial_path(output_path: str) -> str:
@@ -321,6 +383,16 @@ def _validate_cli(args, parser):
             _check_output_path(args.output)
         except ValueError as e:
             parser.error(str(e))
+    if args.emit_pipeline and args.emit_pipeline != "auto":
+        try:
+            check_pipeline_path(args.emit_pipeline)
+        except ValueError as e:
+            parser.error(str(e))
+    if args.sink:
+        try:
+            parse_sink(args.sink, args.file or "x")
+        except ValueError as e:
+            parser.error(f"--sink: {e}")
 
 
 def _expand_str(value):
@@ -334,8 +406,10 @@ _CONFIG_KEYS = (
     ("sample_rows", "sample_rows"), ("no_cache", "no_cache"),
     ("max_drop", "max_drop"), ("no_pre_clean", "no_pre_clean"),
     ("max_cost", "max_cost_usd"), ("smart_parse", "smart_parse"),
+    ("emit_pipeline", "emit_pipeline"), ("sink", "sink"),
+    ("sink_if_exists", "sink_if_exists"),
 )
-_EXPAND_KEYS = ("file", "rules", "output")
+_EXPAND_KEYS = ("file", "rules", "output", "emit_pipeline", "sink")
 
 
 def _apply_config_to_args(args, config):
@@ -378,6 +452,15 @@ def load_config(config_path):
         raise ValueError(f"{config_path}: sample_rows must be >= 1")
     if config.get("output"):
         _check_output_path(config["output"])
+    if config.get("emit_pipeline") not in (None, True, "auto"):
+        check_pipeline_path(config["emit_pipeline"])
+    if config.get("sink"):
+        try:
+            parse_sink(config["sink"], config["file"])
+        except ValueError as e:
+            raise ValueError(f"{config_path}: sink: {e}")
+    if config.get("sink_if_exists") not in (None, "replace", "append", "fail"):
+        raise ValueError(f"{config_path}: sink_if_exists must be replace|append|fail")
     return config
 
 
@@ -418,6 +501,12 @@ def main():
     parser.add_argument("--max-cost-usd", type=float, default=None, help="Stop retrying a dataset once estimated LLM spend reaches this USD cap (needs GEMINI_PRICE_* rates)")
     parser.add_argument("--max-drop", type=float, default=0.75, help="Fail validation if cleaning drops more than this fraction of rows (default: 0.75)")
     parser.add_argument("--sample-rows", type=int, default=15, help="Rows sampled for schema inference: head + deterministic random slice (default: 15)")
+    parser.add_argument("--emit-pipeline", nargs="?", const="auto", default=None, metavar="PATH",
+                        help="Export the validated clean() as a standalone pipeline script (stdlib+pandas only). Bare flag derives foo.pipeline.py next to --output, else give a PATH.")
+    parser.add_argument("--sink", default=None, metavar="SPEC",
+                        help="Warehouse sink for cleaned rows, v1: sqlite:///PATH.DB[:TABLE] (table defaults to input stem)")
+    parser.add_argument("--sink-if-exists", default="replace", choices=["replace", "append", "fail"],
+                        help="What to do when the sink table already exists (default: replace)")
     args = parser.parse_args()
     if args.max_cost_usd is not None and estimate_cost(1, 1) is None:
         print("WARNING: --max-cost-usd is set but GEMINI_PRICE_INPUT_PER_MTOK / "
@@ -483,6 +572,9 @@ def main():
                     no_pre_clean=cfg.get("no_pre_clean", args.no_pre_clean),
                     max_cost_usd=cfg.get("max_cost", args.max_cost_usd),
                     smart_parse_cols=cfg.get("smart_parse", args.smart_parse),
+                    emit_pipeline=cfg.get("emit_pipeline", args.emit_pipeline),
+                    sink=cfg.get("sink", args.sink),
+                    sink_if_exists=cfg.get("sink_if_exists", args.sink_if_exists),
                 ): cfg["file"]
                 for cfg in configs_to_run
             }
@@ -501,12 +593,13 @@ def main():
                                     "budget_stopped": False,
                                     "error": f"crashed: {type(e).__name__}: {e}",
                                     "input_hash": None,
+                                    "pipeline_path": None, "sink": None,
                                     "rows_in": 0, "rows_out": 0, "rows_dropped": 0})
     else:
         if not args.file or not args.rules:
             parser.error("--file and --rules are required, either directly or via --config")
 
-        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop, no_pre_clean=args.no_pre_clean, max_cost_usd=args.max_cost_usd, smart_parse_cols=args.smart_parse)
+        result = process_one(args.file, args.rules, args.retries, args.output, dry_run=args.dry_run, quiet=args.quiet, pagination=args.pagination, no_cache=args.no_cache, sample_rows=args.sample_rows, strict=args.strict, max_drop_fraction=args.max_drop, no_pre_clean=args.no_pre_clean, max_cost_usd=args.max_cost_usd, smart_parse_cols=args.smart_parse, emit_pipeline=args.emit_pipeline, sink=args.sink, sink_if_exists=args.sink_if_exists)
         results.append(result)
 
     print("\n=== SUMMARY ===")
