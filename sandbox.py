@@ -71,17 +71,26 @@ _BUILTIN_ALLOWLIST = frozenset({
     "AttributeError", "Exception",
 })
 
-# DataFrame methods that can write files (or take a path/buffer). Rejected
-# even though other df-rooted methods are allowed — the gate cannot tell
+# Method names that are never legitimate on a cleaning path, whatever object
+# they hang off. Two families: (1) file-writers — the gate cannot tell
 # ``df.to_json()`` (harmless string) from ``df.to_json(path)`` (file write),
-# so the whole family is out. Pure in-memory siblings (to_dict, to_records,
-# to_numpy) stay allowed.
-_DF_IO_METHODS = frozenset({
+# so the whole family is out, including via accessors (Styler.to_excel) and
+# figures (Figure.savefig — ``df.plot().get_figure().savefig(...)`` writes);
+# (2) string-evaluating / arbitrary-call methods — ``df.eval``/``df.query``
+# run string code through pandas' expression engine (a sandbox of its own
+# with a history of escapes), and ``df.pipe`` invokes an arbitrary callable.
+_DF_FILE_METHODS = frozenset({
     "to_csv", "to_json", "to_excel", "to_parquet", "to_sql",
     "to_html", "to_clipboard", "to_pickle", "to_feather",
     "to_orc", "to_stata", "to_hdf", "to_latex", "to_markdown",
-    "to_string",
+    "to_string", "savefig",
 })
+_DF_EVAL_METHODS = frozenset({"eval", "query", "pipe"})
+# Pure in-memory siblings (to_dict, to_records, to_numpy) stay allowed.
+# ``df.style``/``df.plot`` ACCESSORS stay allowed: render()/show() return
+# strings/axes (no files, no string-eval); their dangerous sub-methods are
+# caught above by name.
+_DF_IO_METHODS = _DF_FILE_METHODS | _DF_EVAL_METHODS
 
 
 class SandboxRejected(Exception):
@@ -151,8 +160,10 @@ def _attr_violation(attr: str, node: ast.Attribute) -> str | None:
     """Allowlist check for any attribute access or method call."""
     if attr.startswith("_"):
         return f"dunder/private attribute .{attr} is not allowed"
-    if attr in _DF_IO_METHODS:
+    if attr in _DF_FILE_METHODS:
         return f".{attr}(...) file-writing access is not allowed"
+    if attr in _DF_EVAL_METHODS:
+        return f".{attr}(...) string-evaluation access is not allowed"
     root = _attr_chain_root(node)
     if root is not None and root.id == "pd" and attr not in _PD_ALLOWLIST:
         return f"pd.{attr} is not on the allowlist"

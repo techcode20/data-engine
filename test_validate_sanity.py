@@ -1,6 +1,6 @@
 import pandas as pd
 
-from validate import sanity_checks
+from validate import redact_execution_error, sanity_checks
 
 
 def _df(rows, cols=("a", "b")):
@@ -57,3 +57,21 @@ def test_empty_raw_input_is_not_penalized():
     raw = _df([], cols=("a", "b"))
     cleaned = _df([], cols=("a", "b"))
     assert sanity_checks(raw, cleaned) == []
+
+
+def test_redact_execution_error_keeps_last_line_only():
+    tb = ('Traceback (most recent call last):\n'
+          '  File "C:\\Users\\someone\\app\\_sandbox_worker.py", line 40, in main\n'
+          '    result = namespace["clean"](payload["df"])\n'
+          '  File "<string>", line 2, in clean\n'
+          "    df['secret'] = CUSTOMER_VALUE\n"
+          "KeyError: 'secret'")
+    redacted = redact_execution_error(tb)
+    assert redacted == "KeyError: 'secret'"
+    assert "Users" not in redacted and "CUSTOMER_VALUE" not in redacted
+
+
+def test_redact_execution_error_passes_single_line_through():
+    assert redact_execution_error("SandboxTimeout: clean() exceeded 120s") == \
+        "SandboxTimeout: clean() exceeded 120s"
+    assert redact_execution_error("") == ""

@@ -170,6 +170,20 @@ Generated code is untrusted input — treat it that way:
 - **Residual risks (documented, not hidden)**: no RAM cap on Windows (timeout is the guard); DNS-rebinding TOCTOU on the URL check; shared YAML configs can point `file:` anywhere (by design for a local CLI).
 - **Trust boundary (read this before exposing the engine)**: the AST gate + subprocess sandbox are *risk reduction*, not a strong security boundary — generated Python still runs on the same machine and filesystem (it can read local files the gate doesn't block and exfiltrate via the returned frame). Treat hostile datasets like hostile input: keep them in an OS-level container or equivalent isolation. The `Dockerfile` exists for exactly this: run untrusted sources with `--network none` and a read-only mount for inputs, e.g. `docker run --rm --network none -v %cd%/in:/app/in:ro -v %cd%/out:/app/out ...`. Do not put this CLI behind a network service without that layer.
 
+### Threat model: default backend vs Docker backend
+
+| | Default (`subprocess`) | Docker (`SANDBOX_BACKEND=docker`) |
+|---|---|---|
+| Code execution | Child process, same machine + filesystem | Container, own filesystem namespace |
+| Network | Inherited (no egress block!) | `--network none` — no egress, period |
+| Secrets in env | Scrubbed (`*KEY*/*SECRET*/*TOKEN*`…) | Scrubbed + only the worker file is mounted (`-v …/_sandbox_worker.py:ro`) — the repo (and `.env`) is NOT mounted |
+| Result exfiltration | Frame returns via parquet (data-only, no unpickle) | Same parquet transport across the mount |
+| Resource abuse | Timeout kill; RAM cap POSIX-only | Timeout kill + `--memory` cap everywhere Docker runs |
+| Supply chain | Local venv you installed | Image you chose (`SANDBOX_DOCKER_IMAGE`, `--pull never` — no surprise pulls) |
+| Failure mode | — | Missing binary/image fails LOUDLY, never falls back to subprocess |
+
+Rules of thumb: local CSVs you already have → default is fine. URLs / user-uploaded files / anything adversarial → Docker (any image with pandas+pyarrow works; the repo's own `Dockerfile` qualifies: `docker build -t data-engine .`, then `SANDBOX_DOCKER_IMAGE=data-engine`). Either way: rotate any key that ever touched a log, keep `fix_log.jsonl`/`run_summary.json` owner-only (they are, `0o600`), and never put this CLI behind a network service without the container layer.
+
 ## Config file format
 
 ```yaml

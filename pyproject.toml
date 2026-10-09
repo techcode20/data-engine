@@ -16,7 +16,7 @@ py-modules = [
     "engine", "ingest", "schema_inference", "schema_builder", "schema_cache",
     "code_gen", "sandbox", "_sandbox_worker", "validate", "fix_memory",
     "run_summary", "trends", "gemini_client", "pre_clean", "code_cache",
-    "dashboard", "pipeline_emit", "sinks",
+    "dashboard", "pipeline_emit", "sinks", "bump_version",
 ]
 
 [build-system]

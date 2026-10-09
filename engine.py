@@ -22,7 +22,7 @@ from sandbox import run_generated_code
 from schema_builder import build_pandera_schema
 from schema_inference import infer_schema
 from sinks import parse_sink, write_sink
-from validate import redact_failure_cases, sanity_checks, validate
+from validate import redact_execution_error, redact_failure_cases, sanity_checks, validate
 from importlib.metadata import version as _pkg_version
 from schema_cache import get_cached_schema, set_cached_schema
 from dotenv import load_dotenv
@@ -224,7 +224,9 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
 
         if exec_error:
             print("Execution failed. Asking model to fix it...")
-            log_fix(file_path, attempt, exec_error, code)
+            # Redacted at rest (tracebacks leak paths/values); the repair
+            # prompt below keeps the full text for same-dataset debugging.
+            log_fix(file_path, attempt, redact_execution_error(exec_error), code)
             if _over_budget(file_path, max_cost_usd):
                 print(f"💸 BUDGET: {file_path} hit the ${max_cost_usd:.4f} cap — stopping, no retries.")
                 budget_stopped = True

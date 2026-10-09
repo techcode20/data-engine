@@ -35,6 +35,78 @@ def test_record_without_metadata_defaults_to_zero():
     gc.reset_usage()
 
 
+def test_sdk_timeout_passed_as_milliseconds(monkeypatch):
+    """Regression: HttpOptions.timeout is MILLISECONDS. Passing seconds sets
+    a ~0.1s deadline that fails every call and burns both retry loops."""
+    monkeypatch.setattr(gc, "_client", None)
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(gc.genai, "Client", FakeClient)
+    monkeypatch.setenv("GEMINI_TIMEOUT_S", "120")
+    gc._get_client()
+    assert seen["http_options"] == {"timeout": 120_000}
+
+
+def test_client_construction_race_builds_exactly_one_client(monkeypatch):
+    """Regression: racing _get_client constructions garbage-collects the
+    losers, whose __del__ closes transports under in-flight sibling calls
+    ('client has been closed' in batch mode)."""
+    import threading
+    monkeypatch.setattr(gc, "_client", None)
+    built = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+
+    monkeypatch.setattr(gc.genai, "Client", FakeClient)
+    got = []
+
+    def worker():
+        got.append(gc._get_client())
+
+    threads = [threading.Thread(target=worker) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(built) == 1
+    assert all(g is got[0] for g in got)
+
+
+def test_usage_log_survives_concurrent_record_reset_totals():
+    """Batch mode hammers record/reset/totals from worker threads: no
+    exception, no lost-update crash, totals stay well-formed ints."""
+    import threading
+    gc.reset_usage()
+    errors = []
+
+    def worker(n):
+        try:
+            for i in range(50):
+                gc._record_usage(_resp(1, 1, 2), "p", f"t{n}")
+                gc.usage_totals()
+                if i % 10 == 0:
+                    gc.reset_usage(tag=f"t{n}")
+        except Exception as e:  # noqa: BLE001 — the test IS the handler
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    totals = gc.usage_totals()
+    assert set(totals) == {"calls", "prompt_tokens", "completion_tokens", "total_tokens"}
+    assert all(isinstance(v, int) for v in totals.values())
+    gc.reset_usage()
+
+
 def test_generate_records_usage_without_network():
     gc.reset_usage()
     fake = SimpleNamespace(text="hi", usage_metadata=SimpleNamespace(
@@ -70,7 +142,9 @@ def test_client_gets_sdk_http_timeout():
             )
             assert gc.generate("hello") == "hi"
             _, kwargs = mock_client.call_args
-            assert kwargs["http_options"] == {"timeout": 42.0}
+            # Milliseconds, not seconds — the SDK unit (see
+            # test_sdk_timeout_passed_as_milliseconds).
+            assert kwargs["http_options"] == {"timeout": 42_000}
     gc._client = None
 
 

@@ -85,7 +85,52 @@ def test_gate_rejects_non_allowlisted_code(evil, fragment):
     assert out is None and err is not None and "SandboxRejected" in err
 
 
-# --- E1: file write through the old denylist gap ------------------------------
+# --- E1/E2 as the reporter ran them (exact exploits, not paraphrases) ------
+
+@pytest.mark.parametrize("evil", [
+    # A: dotted reach into os through pd.io — pd.io is not allowlisted.
+    "def clean(df):\n    pd.io.common.os.remove('/tmp/x')\n    return df",
+    # B: alias-then-call — the BINDING line itself trips the gate
+    # (pd.io.common.os.system is not an allowlisted pd.* name).
+    "def clean(df):\n    f = pd.io.common.os.system\n    f('id')\n    return df",
+])
+def test_reporter_exploits_a_and_b_rejected(evil, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    violations = gate_code(evil)
+    assert violations, "gate approved the reported exploit"
+    out, err = run_generated_code(evil, DF)
+    assert out is None and err is not None and "SandboxRejected" in err
+
+
+# --- accessors and eval-style methods ------------------------------------------
+
+@pytest.mark.parametrize("evil,fragment", [
+    ("def clean(df):\n    return df.eval('x + 1')", "eval"),
+    ("def clean(df):\n    return df.query('x > 1')", "query"),
+    ("def clean(df):\n    return df.pipe(lambda d: d)", "pipe"),
+    ("def clean(df):\n    return pd.eval('1 + 1')", "string-evaluation"),
+    ("def clean(df):\n    df.plot().get_figure().savefig('/tmp/x.png')\n    return df", "savefig"),
+    ("def clean(df):\n    df.style.to_excel('/tmp/x.xlsx')\n    return df", "to_excel"),
+    ("def clean(df):\n    df.style.to_latex('/tmp/x.tex')\n    return df", "to_latex"),
+])
+def test_eval_and_file_methods_rejected_everywhere(evil, fragment):
+    violations = gate_code(evil)
+    assert violations, f"gate approved hostile code ({fragment})"
+    assert any(fragment in v for v in violations), f"{fragment!r} not in {violations}"
+    out, err = run_generated_code(evil, DF)
+    assert out is None and err is not None and "SandboxRejected" in err
+
+
+@pytest.mark.parametrize("safe", [
+    # Pure accessors: render() returns a string, plot() an axes object —
+    # no files, no string evaluation. Allowed by the gate; harmless either
+    # way (a returned non-DataFrame fails the result check, engine-side).
+    "def clean(df):\n    _ = df.style.render()\n    return df",
+    "def clean(df):\n    _ = df.plot()\n    return df",
+    "def clean(df):\n    d = df.to_dict()\n    return df",
+])
+def test_pure_accessors_stay_allowed(safe):
+    assert gate_code(safe) == []
 
 @pytest.mark.parametrize("evil,target", [
     ("def clean(df):\n    df.to_hdf(TARGET, key='x')\n    return df", "pwn.h5"),
@@ -165,7 +210,24 @@ def test_parquet_round_trip_preserves_frame_exactly():
     assert_frame_equal(pd.read_parquet(buf), df)
 
 
-# --- docker backend ---------------------------------------------------------------
+# --- parquet fidelity: mixed-type object columns ----------------------------------
+
+@needs_parquet
+def test_mixed_type_frame_fails_retryably_not_catastrophically():
+    """Messy data often yields mixed-type object columns, which parquet
+    refuses. That must surface as a retryable exec error (repair loop feeds
+    on it), never a crash — and never a pass. Note the asymmetry that makes
+    this safe: VALIDATED frames carry exact numpy dtypes (int64/float64/
+    bool/str/datetime64[ns]), which are always parquet-clean; only
+    unvalidated intermediates can hit this wall, and they belong in repair.
+    """
+    df = pd.DataFrame({"m": [1, "two", 3.0]})
+    buf = io.BytesIO()
+    with pytest.raises(Exception, match="[Cc]onvert|Arrow|parquet"):
+        df.to_parquet(buf)
+    out, err = run_generated_code("def clean(df):\n    return df", df)
+    assert out is None and err is not None
+    assert "parquet" in err.lower() or "arrow" in err.lower()
 
 def test_docker_cmd_is_locked_down(tmp_path):
     argv = sandbox._docker_cmd("img:1", str(tmp_path), "pf-test")

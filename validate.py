@@ -60,3 +60,18 @@ def redact_failure_cases(failures) -> str:
         pass
     text = str(failures)
     return text[:1000]
+
+
+def redact_execution_error(text) -> str:
+    """Last-line-only execution errors for LOGS.
+
+    Tracebacks carry local paths (usernames live in ``C:\\Users\\...``),
+    code snippets, and occasionally cell values — none of which belong in
+    fix_log.jsonl. The last line (``ErrorType: message``) keeps the repair
+    signal; single-line sandbox errors pass through untouched. The live fix
+    prompt still receives the full text for same-dataset debugging.
+    """
+    lines = [ln for ln in str(text).strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return lines[-1].strip()[:500]

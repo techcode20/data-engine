@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -22,15 +23,23 @@ GENERATION_CONFIG = {"temperature": 0.0, "max_output_tokens": 2048}
 
 # Per-call usage records: {timestamp, model, purpose, tag, prompt_tokens,
 # completion_tokens, total_tokens}. `tag` (usually the dataset path) lets
-# parallel batch runs attribute spend per dataset. list.append is atomic
-# under the GIL, so worker threads can share this safely.
+# parallel batch runs attribute spend per dataset. All access goes through
+# _USAGE_LOCK: batch mode runs datasets on worker threads, and reset_usage
+# REBINDS the list while readers iterate it — append-atomicity is not enough.
 USAGE_LOG: list[dict] = []
+_USAGE_LOCK = threading.Lock()
 
 _client = None
+_CLIENT_LOCK = threading.Lock()
 
 
 def _get_client():
     """Lazy client: importing this module (e.g. in CI without keys) must not crash.
+
+    Exactly ONE client ever exists: racing genai.Client constructions (one
+    per batch thread) garbage-collects the losers, whose __del__ closes
+    transports out from under in-flight sibling calls ("client has been
+    closed"). Double-checked locking keeps the fast path lock-free.
 
     The HTTP timeout is enforced INSIDE the SDK (httpx deadline), not just by
     the wrapper future: exiting a ThreadPoolExecutor context waits for its
@@ -39,16 +48,22 @@ def _get_client():
     """
     global _client
     if _client is None:
-        _client = genai.Client(
-            api_key=os.getenv("GEMINI_API_KEY"),
-            http_options={"timeout": _llm_timeout_s()},
-        )
+        with _CLIENT_LOCK:
+            if _client is None:
+                # HttpOptions.timeout is MILLISECONDS (google-genai types.HttpOptions)
+                # — passing seconds here sets a ~0.1s deadline that fails every call
+                # and burns both retry loops. Convert explicitly.
+                _client = genai.Client(
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    http_options={"timeout": int(_llm_timeout_s() * 1000)},
+                )
     return _client
 
 
 def _record_usage(response, purpose: str, tag: str):
     meta = getattr(response, "usage_metadata", None)
-    USAGE_LOG.append({
+    with _USAGE_LOCK:
+        USAGE_LOG.append({
         "timestamp": datetime.now().isoformat(),
         "model": MODEL_NAME,
         "purpose": purpose,
@@ -134,15 +149,17 @@ def generate(prompt: str, purpose: str = "", tag: str = "") -> str:
 def reset_usage(tag: str | None = None):
     """Clear usage records (all, or just one dataset tag)."""
     global USAGE_LOG
-    if tag is None:
-        USAGE_LOG = []
-    else:
-        USAGE_LOG = [u for u in USAGE_LOG if u.get("tag") != tag]
+    with _USAGE_LOCK:
+        if tag is None:
+            USAGE_LOG = []
+        else:
+            USAGE_LOG = [u for u in USAGE_LOG if u.get("tag") != tag]
 
 
 def usage_totals(tag: str | None = None) -> dict:
     """Summed tokens across matching records."""
-    recs = USAGE_LOG if tag is None else [u for u in USAGE_LOG if u.get("tag") == tag]
+    with _USAGE_LOCK:
+        recs = list(USAGE_LOG) if tag is None else [u for u in USAGE_LOG if u.get("tag") == tag]
     return {
         "calls": len(recs),
         "prompt_tokens": sum(u["prompt_tokens"] for u in recs),
