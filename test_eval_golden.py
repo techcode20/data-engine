@@ -20,9 +20,15 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from ingest import ingest
-from sandbox import run_generated_code
+from sandbox import _parquet_available, run_generated_code
 from schema_builder import build_pandera_schema, clean_json_text
 from validate import validate, sanity_checks
+
+# The golden path executes reference solutions in a child: needs a working
+# parquet engine (blocked by policy on some Windows boxes — runs on CI/Linux).
+pytestmark = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "eval_fixtures")
 

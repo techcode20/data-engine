@@ -3,9 +3,16 @@ import os
 import pandas as pd
 import pytest
 from engine import process_one
+from sandbox import _parquet_available
 
 import code_cache
 import schema_cache
+
+# Every test here runs the retry loop, which executes a child: needs a
+# working parquet engine (blocked by policy on some Windows boxes).
+pytestmark = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 
 @pytest.fixture(autouse=True)

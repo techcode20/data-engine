@@ -1,5 +1,12 @@
 import pandas as pd
-from sandbox import run_generated_code
+import pytest
+from sandbox import _parquet_available, run_generated_code
+
+# Every test here executes a child: needs a working parquet engine
+# (blocked by policy on some Windows boxes — runs on CI/Linux).
+pytestmark = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 def test_sandbox_runs_valid_code():
     code = "def clean(df):\n    df['x'] = df['x'] * 2\n    return df"

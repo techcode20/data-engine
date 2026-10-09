@@ -160,8 +160,9 @@ python bump_version.py "Short note for the changelog"
 
 Generated code is untrusted input — treat it that way:
 
-- **Static gate** (`sandbox.py::gate_code`): imports, `open`/`eval`/`exec`/`getattr`, file/network `pd.read_*`/`df.to_*`, and dunder access are rejected *without executing anything*.
-- **Subprocess isolation**: approved code runs in a child process with a scrubbed environment (no `*API_KEY*/*SECRET*/*TOKEN*`), a foreign cwd, a kill-on-timeout (`SANDBOX_TIMEOUT_S`, default 120s), and POSIX memory/CPU caps where available (`SANDBOX_MAX_RSS_BYTES`, `SANDBOX_MAX_CPU_S`).
+- **Static gate** (`sandbox.py::gate_code`): an ALLOWLIST, not a denylist. Only `pd.<allowlisted>` data names (42 of them — no readers, no writers, no config), non-file-writing methods on the dataframe, pure builtins, and names bound inside the function survive. Imports, class definitions, async, unknown names/calls, and dunder access are rejected *without executing anything*.
+- **Subprocess isolation**: approved code runs in a child process with a scrubbed environment (no `*API_KEY*/*SECRET*/*TOKEN*`), a foreign cwd, a kill-on-timeout (`SANDBOX_TIMEOUT_S`, default 120s), and POSIX memory/CPU caps where available (`SANDBOX_MAX_RSS_BYTES`, `SANDBOX_MAX_CPU_S`). Opt-in container mode: `SANDBOX_BACKEND=docker` + `SANDBOX_DOCKER_IMAGE=<img with pandas/pyarrow>` runs the child as `docker run --rm --pull never --network none` with only the workdir and the single worker file mounted (never the repo — that would expose `.env`); missing binary/image fails loudly, never falls back.
+- **Data-only result transport**: the child returns the frame as PARQUET plus a JSON status file — the parent never unpickles worker output, so a hostile `__reduce__` gadget cannot execute here. No pickle fallback by design (a missing/blocked parquet engine fails the run loudly).
 - **Prompt hygiene**: inference samples are wrapped in `<DATA>` tags with an untrusted-data instruction, capped at 200 chars/cell, and scanned for instruction patterns (refuses loudly instead of sending).
 - **Leak discipline**: failure logs store error *shapes*, not cell values; only the live same-dataset fix prompt sees full values. State files are written owner-only (`0o600`).
 - **Exports**: CSV cells starting with `= + @ |` (and friends) are quote-prefixed against spreadsheet formula injection.

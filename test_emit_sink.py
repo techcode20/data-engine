@@ -19,6 +19,11 @@ from sinks import check_table, derive_table, parse_sink, write_sink
 
 import code_cache
 import schema_cache
+from sandbox import _parquet_available
+
+needs_parquet = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +145,7 @@ def _write_csv(tmp_path, name, content):
     return str(p)
 
 
+@needs_parquet
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
 def test_process_one_emits_pipeline_and_sink(mock_schema_gen, mock_code_gen, tmp_path):
@@ -173,6 +179,7 @@ def test_process_one_emits_pipeline_and_sink(mock_schema_gen, mock_code_gen, tmp
             == pd.read_csv(out_csv, dtype=str).to_csv(index=False))
 
 
+@needs_parquet
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
 def test_failed_run_emits_neither(mock_schema_gen, mock_code_gen, tmp_path):
@@ -203,6 +210,7 @@ def test_dry_run_writes_draft_but_no_sink(mock_schema_gen, mock_code_gen, tmp_pa
     assert not (tmp_path / "wh.db").exists()
 
 
+@needs_parquet
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
 def test_bad_sink_spec_fails_loudly(mock_schema_gen, mock_code_gen, tmp_path):

@@ -1,7 +1,14 @@
 """Batch survival, summary semantics, exit codes (A13-A15)."""
 from unittest.mock import patch
 
+import pytest
+
 from engine import process_one, summarize_results
+from sandbox import _parquet_available
+
+needs_parquet = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 
 def _csv(tmp_path, content="id,name\n1,Alice\n"):
@@ -10,6 +17,7 @@ def _csv(tmp_path, content="id,name\n1,Alice\n"):
     return str(p)
 
 
+@needs_parquet
 @patch("code_gen.generate")
 @patch("schema_inference.generate")
 def test_batch_survives_one_crashed_dataset(mock_schema_gen, mock_code_gen, tmp_path, monkeypatch):

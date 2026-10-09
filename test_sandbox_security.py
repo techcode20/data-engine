@@ -9,9 +9,14 @@ import os
 import pandas as pd
 import pytest
 
-from sandbox import gate_code, run_generated_code
+from sandbox import _parquet_available, gate_code, run_generated_code
 
 DF = pd.DataFrame({"x": [1, 2]})
+
+# Executes a child — engine-independent gate tests below stay unmarked.
+needs_parquet = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 
 @pytest.mark.parametrize("evil,reason", [
@@ -41,6 +46,7 @@ def test_gate_rejects_hostile_code_without_executing(evil, reason):
     assert out is None and err is not None and "SandboxRejected" in err
 
 
+@needs_parquet
 @pytest.mark.parametrize("good", [
     "def clean(df):\n    df['x'] = df['x'] * 2\n    return df",
     "def clean(df):\n    df = df.dropna()\n    return df.astype({'x': 'int64'})",
@@ -58,6 +64,7 @@ def test_gate_rejects_syntax_errors():
     assert gate_code("def clean(df):\n  oops [[[") != []
 
 
+@needs_parquet
 def test_timeout_kills_hung_code():
     out, err = run_generated_code(
         "def clean(df):\n    while True:\n        pass", DF, timeout=3)

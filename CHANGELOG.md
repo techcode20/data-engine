@@ -1,3 +1,6 @@
+## 0.5.0 - sandbox allowlist + pickle-free transport + docker child
+Gate rewritten from denylist to allowlist (42 `pd.*` data names, non-file-writing df methods, pure builtins, bound names; imports/ClassDef/async/unknowns/dunders rejected). Results return as parquet + JSON status — the parent never unpickles worker output (no pickle fallback by design). Opt-in `SANDBOX_BACKEND=docker` runs the child `--network none` with a single-file worker mount. Three replayed exploits (denylist-gap file write, class smuggling, pickle gadget) now fail with tests. Full suite green live (210 passed) after pyarrow's DLL initially tripped Device Guard.
+
 ## 0.4.0 - code-to-pipeline: exportable clean() + warehouse sink
 `--emit-pipeline [PATH]` exports the validated `clean()` as a standalone script (stdlib + pandas only, provenance header, export sanitizer baked in, `VALIDATED` vs `UNVALIDATED DRY-RUN` banner; nothing emitted on failure). `--sink sqlite:///WH.DB[:TABLE]` loads cleaned rows into SQLite (table defaults to input stem, `--sink-if-exists replace|append|fail`, raw cells — no Excel-quote corruption, sink failure fails loudly). Both work in batch via `emit_pipeline` / `sink` / `sink_if_exists` config keys. 12 new tests; emitted pipelines verified by executing them headlessly and replay-matching the run's CSV.
 

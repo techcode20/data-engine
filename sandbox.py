@@ -2,25 +2,37 @@
 
 Defense in depth (see SECURITY notes in README):
 
-1. AST gate — every function is statically scanned BEFORE it runs. Imports,
-   file/network/process primitives, dynamic evaluation and dunder access are
-   rejected without executing anything.
-2. Subprocess isolation — approved code runs in a child Python process with a
-   scrubbed environment (no *API_KEY*/*SECRET*/*TOKEN*), a foreign cwd, a
-   kill-on-timeout, and POSIX memory/CPU caps where available.
-3. Result check — only a pandas DataFrame comes back; anything else is
-   treated as a failure, never validated.
+1. Allowlist AST gate — every function is statically scanned BEFORE it runs.
+   Only these survive: ``pd.<allowlisted>`` names, methods/attributes on the
+   dataframe (or values derived from it) except known file-writing methods,
+   a small set of pure builtins, and names bound inside the function itself.
+   Everything else — imports, class definitions, unknown names or calls,
+   dunder access — is rejected without executing anything.
+2. Process isolation — approved code runs in a child Python process (or an
+   optional Docker container with ``--network none``) with a scrubbed
+   environment (no *API_KEY*/*SECRET*/*TOKEN*), a foreign cwd, a kill-on-
+   timeout, and POSIX memory/CPU caps where available.
+3. Data-only result transport — the child returns the frame as PARQUET plus
+   a small JSON status file. The parent NEVER unpickles worker output, so a
+   hostile ``__reduce__`` gadget in the result path cannot execute here.
 
-Residual risk (documented): the child shares the filesystem with the user, so
-treat hostile datasets like hostile input — use --strict, review --dry-run
-output, and prefer containers for truly untrusted sources.
+Residual risk (documented): the input frame still travels parent→child as
+pickle (dump direction is safe — unpickling is where gadgets fire — and the
+loader is the sacrificial child); the child shares the filesystem with the
+user in subprocess mode; treat hostile datasets like hostile input — use
+--strict, review --dry-run output, and prefer containers for truly
+untrusted sources.
 """
 import ast
+import json
 import os
 import pickle
+import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
+from functools import lru_cache
 
 import pandas as pd
 
@@ -28,28 +40,47 @@ WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sandbox_work
 
 DEFAULT_TIMEOUT_S = 120
 
-# Calls that are never legitimate in a cleaning function.
-_DENY_CALLS = frozenset({
-    "eval", "exec", "open", "compile", "__import__", "input",
-    "globals", "locals", "vars", "dir", "help", "exit", "quit",
-    "breakpoint", "memoryview", "getattr", "setattr", "delattr",
-    "hasattr", "type", "super", "object",
+# pd.* names a cleaning function may touch. Deliberately data-only: no
+# readers (read_*), no writers, no config mutation (set_option), no
+# introspection (api), no test/plotting/io namespaces. Anything else under
+# ``pd.`` is rejected — a bare ``pd.HDFStore(...)`` or ``pd.read_csv(...)``
+# must never slip past the gate again.
+_PD_ALLOWLIST = frozenset({
+    "to_datetime", "to_numeric", "to_timedelta",
+    "DataFrame", "Series", "Index", "MultiIndex", "RangeIndex",
+    "Categorical", "CategoricalDtype", "StringDtype",
+    "NA", "NaT", "isna", "notna", "isnull", "notnull",
+    "concat", "merge", "cut", "qcut", "get_dummies", "crosstab",
+    "pivot_table", "pivot", "melt", "factorize", "unique",
+    "Timestamp", "Timedelta", "date_range", "bdate_range",
+    "period_range", "interval_range", "Interval", "IntervalIndex",
+    "Period", "PeriodIndex", "DatetimeIndex", "TimedeltaIndex",
+    "Grouper", "NamedAgg",
 })
-# Attribute roots that escape the DataFrame world (files, OS, network, loader).
-_DENY_ATTRS = frozenset({
-    "read_csv", "read_json", "read_excel", "read_parquet", "read_sql",
-    "read_html", "read_clipboard", "read_pickle", "read_feather",
-    "read_orc", "read_sas", "read_spss", "read_stata",
+
+# Pure builtins + the exception types model code plausibly raises.
+# Everything else (open/eval/exec/getattr/globals/type/...) is rejected by
+# omission — this is the point of an allowlist over the old denylist.
+_BUILTIN_ALLOWLIST = frozenset({
+    "print", "len", "range", "str", "int", "float", "bool",
+    "list", "dict", "set", "tuple", "frozenset",
+    "min", "max", "sum", "abs", "round", "pow", "divmod",
+    "enumerate", "zip", "sorted", "reversed", "map", "filter",
+    "any", "all", "isinstance",
+    "ValueError", "TypeError", "KeyError", "IndexError",
+    "AttributeError", "Exception",
+})
+
+# DataFrame methods that can write files (or take a path/buffer). Rejected
+# even though other df-rooted methods are allowed — the gate cannot tell
+# ``df.to_json()`` (harmless string) from ``df.to_json(path)`` (file write),
+# so the whole family is out. Pure in-memory siblings (to_dict, to_records,
+# to_numpy) stay allowed.
+_DF_IO_METHODS = frozenset({
     "to_csv", "to_json", "to_excel", "to_parquet", "to_sql",
-    "to_html", "to_clipboard", "to_pickle", "to_feather", "to_orc",
-    "to_stata", "system", "popen", "spawn", "exec", "run", "call",
-})
-# Bare names that must never appear (modules + interpreter hooks).
-_DENY_NAMES = frozenset({
-    "os", "sys", "subprocess", "socket", "shutil", "pathlib",
-    "importlib", "builtins", "__builtins__", "io", "pickle",
-    "requests", "urllib", "http", "ctypes", "multiprocessing",
-    "threading", "pty", "signal",
+    "to_html", "to_clipboard", "to_pickle", "to_feather",
+    "to_orc", "to_stata", "to_hdf", "to_latex", "to_markdown",
+    "to_string",
 })
 
 
@@ -57,31 +88,118 @@ class SandboxRejected(Exception):
     """Raised when generated code fails the static gate (never executed)."""
 
 
+def _bound_names(tree: ast.AST) -> set:
+    """Names bound inside the code: args, assignments, loop/comprehension
+    targets, with/except/namedexpr bindings, and nested def names (so a
+    helper or a recursive ``clean`` passes the Name check — their BODIES
+    are still walked and gated)."""
+    bound = set()
+
+    def _bind_target(t):
+        for n in ast.walk(t):
+            if isinstance(n, ast.Name):
+                bound.add(n.id)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                bound.add(node.name)
+            a = node.args
+            for arg in list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs):
+                bound.add(arg.arg)
+            if a.vararg:
+                bound.add(a.vararg.arg)
+            if a.kwarg:
+                bound.add(a.kwarg.arg)
+        elif isinstance(node, ast.Lambda):
+            a = node.args
+            for arg in list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs):
+                bound.add(arg.arg)
+            if a.vararg:
+                bound.add(a.vararg.arg)
+            if a.kwarg:
+                bound.add(a.kwarg.arg)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = getattr(node, "targets", None)
+            if targets is None:
+                targets = [node.target]
+            for t in targets:
+                _bind_target(t)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            _bind_target(node.target)
+        elif isinstance(node, ast.With):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    _bind_target(item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                bound.add(node.name)
+    bound.discard("")
+    return bound
+
+
+def _attr_chain_root(node: ast.Attribute):
+    """Innermost value of an attribute chain (``a.b.c`` → Name ``a``),
+    or None when the chain grows out of a call/subscript instead."""
+    v = node.value
+    while isinstance(v, ast.Attribute):
+        v = v.value
+    return v if isinstance(v, ast.Name) else None
+
+
+def _attr_violation(attr: str, node: ast.Attribute) -> str | None:
+    """Allowlist check for any attribute access or method call."""
+    if attr.startswith("_"):
+        return f"dunder/private attribute .{attr} is not allowed"
+    if attr in _DF_IO_METHODS:
+        return f".{attr}(...) file-writing access is not allowed"
+    root = _attr_chain_root(node)
+    if root is not None and root.id == "pd" and attr not in _PD_ALLOWLIST:
+        return f"pd.{attr} is not on the allowlist"
+    return None
+
+
 def gate_code(code_str: str) -> list[str]:
-    """Static scan. Returns a list of violations (empty = approved to run)."""
+    """Static allowlist scan. Returns violations (empty = approved to run).
+
+    Never raises — arbitrary model text must produce a list, not a crash.
+    """
     try:
         tree = ast.parse(code_str)
-    except SyntaxError as e:
+    except Exception as e:  # SyntaxError, ValueError (null bytes), ...
         return [f"syntax error: {e}"]
     violations = []
+    if not any(isinstance(n, ast.FunctionDef) and n.name == "clean"
+               for n in tree.body):
+        return ["no top-level function clean(df) defined"]
+    bound = _bound_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             violations.append("import statements are not allowed (pd is pre-imported)")
+        elif isinstance(node, ast.ClassDef):
+            violations.append("class definitions are not allowed")
+        elif isinstance(node, ast.AsyncFunctionDef):
+            violations.append("async functions are not allowed")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            violations.append("global/nonlocal statements are not allowed")
+        elif isinstance(node, (ast.Yield, ast.YieldFrom)):
+            violations.append("generators are not allowed (clean must return a DataFrame)")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in _DENY_CALLS:
+            if node.func.id not in _BUILTIN_ALLOWLIST and node.func.id not in bound:
                 violations.append(f"call to {node.func.id}() is not allowed")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr in _DENY_ATTRS:
-                violations.append(f".{node.func.attr}(...) file/process access is not allowed")
-            if node.func.attr.startswith("_"):
-                violations.append(f"dunder/private attribute .{node.func.attr} is not allowed")
+            bad = _attr_violation(node.func.attr, node.func)
+            if bad:
+                violations.append(bad)
         elif isinstance(node, ast.Attribute):
-            if node.attr.startswith("_"):
-                violations.append(f"dunder/private attribute .{node.attr} is not allowed")
+            bad = _attr_violation(node.attr, node)
+            if bad:
+                violations.append(bad)
         elif isinstance(node, ast.Name):
-            if node.id in _DENY_NAMES:
-                violations.append(f"name '{node.id}' is not allowed")
             if node.id.startswith("__"):
+                violations.append(f"name '{node.id}' is not allowed")
+            elif (node.id not in bound and node.id != "pd"
+                    and node.id not in _BUILTIN_ALLOWLIST):
                 violations.append(f"name '{node.id}' is not allowed")
     # De-duplicate while preserving order.
     return list(dict.fromkeys(violations))
@@ -104,11 +222,125 @@ def _timeout_s() -> float:
         return float(DEFAULT_TIMEOUT_S)
 
 
-def run_generated_code(code_str: str, df: pd.DataFrame, timeout=None):
+@lru_cache(maxsize=1)
+def _parquet_available() -> bool:
+    """Probe a real round-trip: pyarrow may import while its _parquet DLL is
+    blocked by policy (seen under Device Guard) — only a live write+read
+    proves the transport works."""
+    try:
+        import io as _io
+        buf = _io.BytesIO()
+        pd.DataFrame({"probe": [1]}).to_parquet(buf)
+        buf.seek(0)
+        pd.read_parquet(buf)
+        return True
+    except Exception:
+        return False
+
+
+def _docker_cmd(image: str, tmpdir: str, container_name: str) -> list:
+    """argv for the containerized child. Single-file worker mount (never the
+    whole repo — that would expose .env/secrets to hostile code), no network,
+    no implicit pulls, no privileged flag, memory cap when configured."""
+    work = tmpdir.replace("\\", "/")
+    worker = WORKER.replace("\\", "/")
+    cmd = ["docker", "run", "--rm", "--pull", "never", "--network", "none",
+           "--name", container_name,
+           "-v", f"{work}:/work",
+           "-v", f"{worker}:/app/_sandbox_worker.py:ro"]
+    try:
+        mem = int(float(os.getenv("SANDBOX_MAX_RSS_BYTES", "0")))
+    except ValueError:
+        mem = 0
+    if mem > 0:
+        cmd += ["--memory", str(mem)]
+    cmd += [image, "python", "/app/_sandbox_worker.py",
+            "/work/code.py", "/work/in.pkl",
+            "/work/out.parquet", "/work/status.json"]
+    return cmd
+
+
+def _check_docker() -> str | None:
+    """Return an error string when docker mode is misconfigured, else None."""
+    if not os.getenv("SANDBOX_DOCKER_IMAGE", ""):
+        return "SANDBOX_BACKEND=docker needs SANDBOX_DOCKER_IMAGE set"
+    if shutil.which("docker") is None:
+        return "SANDBOX_BACKEND=docker but no docker binary on PATH"
+    return None
+
+
+def _launch(tmpdir: str, backend: str, timeout: float):
+    """Run the worker; return (proc-ish, stderr_text).
+
+    Docker mode never falls back to subprocess — a silent downgrade would
+    void the operator's explicit isolation choice; missing binary or image
+    is a loud error instead.
+    """
+    code_p = os.path.join(tmpdir, "code.py")
+    in_p = os.path.join(tmpdir, "in.pkl")
+    out_p = os.path.join(tmpdir, "out.parquet")
+    status_p = os.path.join(tmpdir, "status.json")
+    if backend == "docker":
+        bad = _check_docker()
+        if bad:
+            raise RuntimeError(bad)
+        image = os.getenv("SANDBOX_DOCKER_IMAGE", "")
+        name = f"pf-sandbox-{uuid.uuid4().hex[:12]}"
+        argv = _docker_cmd(image, tmpdir, name)
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=timeout, env=_scrubbed_env())
+        except subprocess.TimeoutExpired:
+            # Killing the CLI does not stop the container — kill by name,
+            # best effort, then report the timeout like subprocess mode.
+            for mop in (["docker", "kill", name], ["docker", "rm", "-f", name]):
+                try:
+                    subprocess.run(mop, capture_output=True, timeout=30)
+                except Exception:
+                    pass
+            raise
+        return proc, (proc.stderr or "")
+    proc = subprocess.run(
+        [sys.executable, WORKER, code_p, in_p, out_p, status_p],
+        capture_output=True, text=True,
+        timeout=timeout, cwd=tmpdir, env=_scrubbed_env(),
+    )
+    return proc, (proc.stderr or "")
+
+
+def _read_result(tmpdir: str, stderr_tail: str):
+    """Data-only result read: JSON status first, parquet frame only on ok.
+
+    Worker output is never deserialized with pickle on this path — a
+    hostile payload sitting where out.parquet should be raises from the
+    parquet reader instead of executing.
+    """
+    try:
+        with open(os.path.join(tmpdir, "status.json"), encoding="utf-8") as f:
+            status = json.load(f)
+    except Exception:
+        return None, f"SandboxError: worker died without a result\n{stderr_tail[-2000:]}"
+    if not isinstance(status, dict) or not status.get("ok"):
+        err = status.get("error", "unknown worker failure") if isinstance(status, dict) else "unreadable status"
+        return None, err if isinstance(err, str) else str(err)
+    try:
+        result = pd.read_parquet(os.path.join(tmpdir, "out.parquet"))
+    except Exception as e:
+        return None, f"SandboxError: result is not valid parquet: {e}"
+    if not isinstance(result, pd.DataFrame):
+        return None, (
+            "SandboxError: clean() must return a pandas DataFrame, "
+            f"got {type(result).__name__}"
+        )
+    return result, None
+
+
+def run_generated_code(code_str: str, df: pd.DataFrame, timeout=None, backend=None):
     """Execute model-generated code in an isolated child process.
 
     Returns (DataFrame, None) on success, (None, error_text) otherwise —
     including gate rejections, crashes, non-DataFrame returns, and timeouts.
+    ``backend`` overrides SANDBOX_BACKEND ("subprocess"|"docker").
     """
     violations = gate_code(code_str)
     if violations:
@@ -116,39 +348,37 @@ def run_generated_code(code_str: str, df: pd.DataFrame, timeout=None):
 
     if timeout is None:
         timeout = _timeout_s()
+    backend = backend or os.getenv("SANDBOX_BACKEND", "subprocess")
+    if backend not in ("subprocess", "docker"):
+        return None, f"SandboxError: unknown backend {backend!r} (want subprocess|docker)"
+    if backend == "docker":
+        # Misconfiguration must fail here — engine-independently — never as
+        # a confusing parquet/timeout error three steps later.
+        bad = _check_docker()
+        if bad:
+            return None, f"SandboxError: {bad}"
+    if not _parquet_available():
+        return None, ("SandboxError: no working parquet engine (pyarrow missing "
+                      "or its DLL blocked) — refusing pickle fallback for results")
+
     tmpdir = tempfile.mkdtemp(prefix="pf_sandbox_")
-    inp = os.path.join(tmpdir, "in.pkl")
-    outp = os.path.join(tmpdir, "out.pkl")
     try:
-        with open(inp, "wb") as f:
-            pickle.dump({"code": code_str, "df": df}, f)
+        with open(os.path.join(tmpdir, "code.py"), "w", encoding="utf-8") as f:
+            f.write(code_str)
+        # Dump direction only: the loader is the sacrificial child, and the
+        # frame was built by our own ingest (plain dtypes + strings).
+        with open(os.path.join(tmpdir, "in.pkl"), "wb") as f:
+            pickle.dump(df, f)
     except Exception as e:
         return None, f"SandboxRejected: input not serializable: {e}"
 
     try:
-        proc = subprocess.run(
-            [sys.executable, WORKER, inp, outp],
-            capture_output=True, text=True,
-            timeout=timeout, cwd=tmpdir, env=_scrubbed_env(),
-        )
+        _, stderr_tail = _launch(tmpdir, backend, timeout)
     except subprocess.TimeoutExpired:
         return None, f"SandboxTimeout: clean() exceeded {timeout:g}s and was killed"
+    except RuntimeError as e:
+        return None, f"SandboxError: {e}"
     except Exception as e:
         return None, f"SandboxError: could not launch worker: {e}"
 
-    try:
-        with open(outp, "rb") as f:
-            payload = pickle.load(f)
-    except Exception:
-        stderr = (proc.stderr or "")[-2000:]
-        return None, f"SandboxError: worker died without a result\n{stderr}"
-
-    if not payload.get("ok"):
-        return None, payload.get("error", "SandboxError: unknown worker failure")
-    result = payload.get("df")
-    if not isinstance(result, pd.DataFrame):
-        return None, (
-            "SandboxError: clean() must return a pandas DataFrame, "
-            f"got {type(result).__name__}"
-        )
-    return result, None
+    return _read_result(tmpdir, stderr_tail)

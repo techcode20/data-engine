@@ -1,8 +1,13 @@
 # Pinned direct dependencies. Regenerate with:
-#   pip freeze | grep -iE "^(pandas|pandera|google-genai|python-dotenv|pyyaml|requests|pytest|pytest-cov)=="
+#   pip freeze | grep -iE "^(pandas|pandera|google-genai|python-dotenv|pyyaml|requests|pytest|pytest-cov|pyarrow)=="
 # Install with: pip install -r requirements.txt
 # Audit with: pip-audit -r requirements.txt
+# pyarrow carries the sandbox result transport (parquet, never pickle).
+# NOTE: on Windows machines with WDAC/Device Guard, pyarrow's _parquet DLL
+# may be blocked — the sandbox then refuses to run (loudly) rather than
+# falling back to pickle. Full execution tests run on CI/Linux.
 pandas==3.0.5
+pyarrow==26.0.0
 pandera==0.33.1
 google-genai==2.24.0
 python-dotenv==1.2.3
