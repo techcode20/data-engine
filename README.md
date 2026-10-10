@@ -145,6 +145,29 @@ python -m uvicorn backend_api:app --port 8000   # localhost only; frontend expec
 
 Then upload a CSV/JSON at the gate, write business rules in the box, and press DEPART: stages light from real `process_one` hooks, scores are row pass rates, the magnifier shows your rows, the poster shows the actual generated code, and the ticket machine serves `cleaned.csv` + `pipeline.py` downloads off your run. One live run at a time (a second DEPART gets 409); Cancel stops between steps. `script.ts` stays as the offline demo and regression net. API docs for contributors live in `backend_api.py`'s docstring.
 
+### Sharing the backend with trusted people (not localhost)
+
+Default mode is open dev (no auth, subprocess sandbox) — fine for loopback,
+never for a network. For a few trusted people over a VPN (Tailscale is the
+easy option) with TLS in front:
+
+```
+PF_API_TOKEN=<long-random> SANDBOX_BACKEND=docker SANDBOX_DOCKER_IMAGE=data-engine \
+  python -m uvicorn backend_api:app --host 127.0.0.1 --port 8000
+```
+
+What the token buys: every `POST /runs` needs `Authorization: Bearer`, each
+run returns a secret run-token required for stream/snapshot/download/cancel
+(the browser pastes the shared token once at the gate — memory-only, never
+stored; run tokens ride the download URLs because anchors can't set
+headers, so keep access logs away from untrusted eyes). Docker becomes
+MANDATORY (creation 503s while docker is misconfigured — no silent
+downgrade), and finished runs are swept — frames, `pf_run_*` tmpdirs,
+snapshots — after `ARTIFACT_TTL_S` (default 600s; floor 60s). Row samples
+stay served by design (the magnifier needs them), so treat run URLs as
+capabilities and rotate the token if one leaks. Still no per-user quotas —
+one shared token means shared Gemini spend.
+
 Cut a release after merging a feature:
 
 ```
@@ -170,7 +193,7 @@ python bump_version.py "Short note for the changelog"
 
 Generated code is untrusted input — treat it that way:
 
-- **Static gate** (`sandbox.py::gate_code`): an ALLOWLIST, not a denylist. Only `pd.<allowlisted>` data names (42 of them — no readers, no writers, no config), non-file-writing methods on the dataframe, pure builtins, and names bound inside the function survive. Imports, class definitions, async, unknown names/calls, and dunder access are rejected *without executing anything*.
+- **Static gate** (`sandbox.py::gate_code`): an ALLOWLIST, not a denylist. Only `pd.<allowlisted>` data names (42 of them — no readers, no writers, no config), non-file-writing methods on the dataframe, pure builtins, and names bound inside the function survive. A second layer scans interpreted strings: call arguments naming a blocked method are rejected (dict keys and `print()` text are data, never interpreted); `agg`/`apply`/`transform` accept only sum/mean/min/max/count/first/last/median/nunique (single-constant aliases resolved); path-like keyword names (`buf`, `fname`, …) are rejected. Imports, class definitions, async, unknown names/calls, and dunder access are rejected *without executing anything*.
 - **Subprocess isolation**: approved code runs in a child process with a scrubbed environment (no `*API_KEY*/*SECRET*/*TOKEN*`), a foreign cwd, a kill-on-timeout (`SANDBOX_TIMEOUT_S`, default 120s), and POSIX memory/CPU caps where available (`SANDBOX_MAX_RSS_BYTES`, `SANDBOX_MAX_CPU_S`). Opt-in container mode: `SANDBOX_BACKEND=docker` + `SANDBOX_DOCKER_IMAGE=<img with pandas/pyarrow>` runs the child as `docker run --rm --pull never --network none` with only the workdir and the single worker file mounted (never the repo — that would expose `.env`); missing binary/image fails loudly, never falls back.
 - **Data-only result transport**: the child returns the frame as PARQUET plus a JSON status file — the parent never unpickles worker output, so a hostile `__reduce__` gadget cannot execute here. No pickle fallback by design (a missing/blocked parquet engine fails the run loudly).
 - **Prompt hygiene**: inference samples are wrapped in `<DATA>` tags with an untrusted-data instruction, capped at 200 chars/cell, and scanned for instruction patterns (refuses loudly instead of sending).

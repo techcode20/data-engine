@@ -7,10 +7,18 @@ Y2: trends.py counts dry-run SKIP entries (success=None) as failures,
 """
 import json
 
+import pytest
+
 from run_summary import write_summary
 from trends import summarize_by_dataset
+from sandbox import _parquet_available
+
+needs_parquet = pytest.mark.skipif(
+    not _parquet_available(),
+    reason="no working parquet engine here (pyarrow blocked/missing)")
 
 
+@needs_parquet
 def test_history_entries_carry_input_hash(tmp_path, monkeypatch):
     import run_summary
     import code_cache

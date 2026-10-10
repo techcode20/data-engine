@@ -210,6 +210,54 @@ def test_parquet_round_trip_preserves_frame_exactly():
     assert_frame_equal(pd.read_parquet(buf), df)
 
 
+# --- string-argument layer: method names smuggled as strings --------------------
+# These MUST fail. Pre-fix they pass the gate (hole demonstration); the
+# implementation below the tests closes them. Data-position strings
+# (fillna values, dict keys, print text) must keep passing — the checks
+# are scoped to interpreted positions, not all literals.
+
+STRING_REJECT = [
+    ("def clean(df):\n    return df.agg('to_csv')", "to_csv"),
+    ("def clean(df):\n    return df.agg('evil_func')", "agg"),
+    ("def clean(df):\n    return df.transform('to_json')", "to_json"),
+    ("def clean(df):\n    fn = 'to_csv'\n    return df.agg(fn)", "to_csv"),
+    ("def clean(df):\n    return df.dropna(path_or_buf='/tmp/x')", "path_or_buf"),
+    ("def clean(df):\n    return df.fillna(value=1, buf='/tmp/x')", "buf"),
+    ("def clean(df):\n    return df.to_datetime(df['x'], errors='to_csv')", "to_csv"),
+    ("def clean(df):\n    return df.rename(columns={'a': 'eval'})", "eval"),
+]
+
+
+@pytest.mark.parametrize("evil,fragment", STRING_REJECT)
+def test_string_smuggled_methods_rejected(evil, fragment):
+    violations = gate_code(evil)
+    assert violations, f"gate approved string-smuggled code ({fragment})"
+    assert any(fragment in v for v in violations), f"{fragment!r} not in {violations}"
+    out, err = run_generated_code(evil, DF)
+    assert out is None and err is not None and "SandboxRejected" in err
+
+
+STRING_APPROVE = [
+    "def clean(df):\n    return df.agg('sum')",
+    "def clean(df):\n    return df.agg(['sum', 'mean'])",
+    "def clean(df):\n    return df.agg({'a': 'sum', 'b': 'median'})",
+    "def clean(df):\n    return df.groupby('x').agg('mean')",
+    "def clean(df):\n    return df.apply('count')",
+    "def clean(df):\n    return df.transform('first')",
+    "def clean(df):\n    fn = 'mean'\n    return df.agg(fn)",
+    "def clean(df):\n    return df.fillna('N/A')",
+    "def clean(df):\n    print('to_csv failed')\n    return df",
+    "def clean(df):\n    return df.rename(columns={'a': 'b'})",
+    "def clean(df):\n    return df.rename(columns={'to_csv': 'x'})",
+    "def clean(df):\n    return pd.to_datetime(df['x'], format='mixed', errors='coerce')",
+]
+
+
+@pytest.mark.parametrize("good", STRING_APPROVE)
+def test_data_position_strings_stay_allowed(good):
+    assert gate_code(good) == []
+
+
 # --- parquet fidelity: mixed-type object columns ----------------------------------
 
 @needs_parquet

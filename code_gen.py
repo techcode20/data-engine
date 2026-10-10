@@ -30,7 +30,11 @@ Requirements:
 - Do NOT include import statements other than pandas as pd, which is already imported
 - Sandbox rules (violations are rejected WITHOUT running): no import statements
   at all, no open()/eval()/exec()/getattr(), no file or network access
-  (pd.read_*/df.to_* are blocked), no dunder/private attributes
+  (pd.read_*/df.to_* are blocked), no dunder/private attributes.
+  No df.eval/df.query/df.pipe; agg/apply/transform take only
+  sum/mean/min/max/count/first/last/median/nunique; string arguments must
+  never name file methods (nothing starting with to_); avoid path-like
+  keyword names (path_or_buf, buf, fname)
 - Return ONLY the raw Python code for the function, no markdown fences, no explanation, no example usage"""
     code = (generate(prompt, purpose="generate_code", tag=tag) or "").strip()
     if not code:
@@ -56,7 +60,8 @@ Fix the function. Return ONLY the corrected raw Python code for the function
 def clean(df):
     ...
 No markdown fences, no explanation, no example usage. Keep everything that already worked — only change what's needed to fix this specific problem.
-Sandbox rules: no imports, no open()/eval()/exec()/getattr(), no file or network calls, no dunder attributes."""
+Sandbox rules: no imports, no open()/eval()/exec()/getattr(), no file or network calls, no dunder attributes,
+no df.eval/df.query/df.pipe, agg/apply/transform only with sum/mean/min/max/count/first/last/median/nunique."""
     code = (generate(prompt, purpose="fix_code", tag=tag) or "").strip()
     if not code:
         raise ValueError("empty model response for code fix")

@@ -75,7 +75,8 @@ function saveSnapshot(s: TransitState) {
         chaosStall: s.chaosStall,
         liveMode: s.liveMode,
         rules: s.rules,
-        live: s.live,
+        // Ownership token stays memory-only even in snapshots.
+        live: s.live ? { runId: s.live.runId, base: s.live.base, runToken: null } : null,
         codeSources,
         liveColumns: s.liveColumns,
         liveRows: s.liveRows,
@@ -138,7 +139,8 @@ interface TransitState {
   memoryQuery: string;
   liveMode: boolean;
   rules: string;
-  live: { runId: string; base: string } | null;
+  live: { runId: string; base: string; runToken: string | null } | null;
+  apiToken: string;
   codeSources: Record<number, string>;
   liveColumns: string[];
   liveRows: BatchRow[];
@@ -146,6 +148,7 @@ interface TransitState {
   loadSample: () => void;
   loadFile: (f: File) => Promise<void>;
   setRules: (r: string) => void;
+  setApiToken: (t: string) => void;
   setLiveMode: (b: boolean) => void;
   depart: () => void;
   togglePause: () => void;
@@ -270,7 +273,10 @@ export const useTransit = create<TransitState>()((set, get) => {
   memoryQuery: "",
   liveMode: restored?.liveMode ?? readLiveMode(),
   rules: restored?.rules ?? DEFAULT_LIVE_RULES,
-  live: restored?.live ?? null,
+  // Ownership tokens are memory-only (never persisted): after a refresh,
+  // server fetches fail closed with a re-DEPART hint instead of stale auth.
+  live: restored?.live ? { runId: restored.live.runId, base: restored.live.base, runToken: null } : null,
+  apiToken: "",
   codeSources: restored?.codeSources ?? {},
   liveColumns: restored?.liveColumns ?? [],
   liveRows: restored?.liveRows ?? [],
@@ -284,6 +290,7 @@ export const useTransit = create<TransitState>()((set, get) => {
   },
 
   setRules: (r) => set({ rules: r }),
+  setApiToken: (t: string) => set({ apiToken: t }),
   setLiveMode: (b) => {
     try {
       localStorage.setItem(LIVE_KEY, b ? "1" : "0");
@@ -354,8 +361,9 @@ export const useTransit = create<TransitState>()((set, get) => {
       }
       e.stop();
       (e as ApiBackend).setPayload(bytes, rules, 3);
-      (e as ApiBackend).onRunId = (id) => {
-        set({ live: { runId: id, base: API_BASE } });
+      (e as ApiBackend).setApiToken(get().apiToken);
+      (e as ApiBackend).onRunId = (id, token) => {
+        set({ live: { runId: id, base: API_BASE, runToken: token || null } });
         saveSnapshot(get());
       };
     } else {

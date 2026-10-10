@@ -110,13 +110,15 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                 no_cache=False, sample_rows=15, strict=False, max_drop_fraction=0.75,
                 no_pre_clean=False, max_cost_usd=None, smart_parse_cols=False,
                 emit_pipeline=None, sink=None, sink_if_exists="replace",
-                on_stage=None, on_attempt=None, on_frames=None, should_cancel=None):
+                on_stage=None, on_attempt=None, on_frames=None, should_cancel=None,
+                sandbox_backend=None):
     """on_stage(stage, status): live progress (intake/schema/code/sandbox/
     validation/repair/memory/archive × running/passed/failed).
     on_attempt(n, info): per-attempt {code, ok, failure_cases|None,
     failures_text|None, rows_in, rows_out, schema_json}.
     on_frames(raw_df|None, cleaned_df|None): frame access for live downloads.
-    should_cancel(): polled each loop iteration; cooperative stop."""
+    should_cancel(): polled each loop iteration; cooperative stop.
+    sandbox_backend: forwarded to run_generated_code (None = env default)."""
     reset_usage(tag=file_path)  # attribute this run's LLM spend to this dataset
     input_hash = _input_hash(file_path, rules)
     try:
@@ -247,7 +249,7 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
         if not quiet:
             print(f"\n=== {file_path} — ATTEMPT {attempt} ===")
         _fire(on_stage, "sandbox", "running")
-        cleaned_df, exec_error = run_generated_code(code, df)
+        cleaned_df, exec_error = run_generated_code(code, df, backend=sandbox_backend)
 
         if cleaned_df is not None and not isinstance(cleaned_df, pd.DataFrame):
             # Model returned a non-frame (None, list, scalar): retryable, not fatal.

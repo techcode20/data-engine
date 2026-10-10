@@ -17,8 +17,25 @@ Endpoints (all local-only; bind 127.0.0.1):
     GET  /health                {ok, version}
 
 Single-flight: one live run at a time; a second POST while one runs → 409.
+
+Sharing modes (env):
+    unset PF_API_TOKEN → open dev mode (localhost): no auth, env-default
+    sandbox backend, no ownership checks.
+    PF_API_TOKEN set → shared mode: every POST needs
+    `Authorization: Bearer <token>`; each run returns a secret run_token
+    required (header or ?token=) for all run-scoped endpoints; Docker
+    backend is MANDATORY (POST → 503 while docker is misconfigured);
+    finished runs are swept (frames, tmpdirs, snapshots) after
+    ARTIFACT_TTL_S (default 600). Serve behind a VPN + TLS terminator;
+    query-string tokens can land in access logs — prefer the header
+    everywhere a client can set one (EventSource/download anchors cannot).
 """
+import hmac
 import io
+import os
+import secrets
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -42,6 +59,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # same cap as the frontend gate
 MAX_SAMPLE_ROWS = 8
 MAX_CELL_CHARS = 200
 ALLOWED_EXTENSIONS = (".csv", ".json")
+ARTIFACT_TTL_S = 600  # finished runs swept after this; env ARTIFACT_TTL_S overrides
 
 app = FastAPI(title="pipelineforge-transit-live", version=_VERSION)
 app.add_middleware(
@@ -53,6 +71,97 @@ app.add_middleware(
 
 _registry: dict = {}
 _registry_lock = threading.Lock()
+_sweeper_started = False
+
+
+def _api_token() -> str | None:
+    """Shared bearer token, or None for open dev mode. Read per-request so
+    tests (and operators) can flip modes without a restart."""
+    return os.getenv("PF_API_TOKEN") or None
+
+
+def _token_mode() -> bool:
+    return _api_token() is not None
+
+
+def _credential(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return request.query_params.get("token")
+
+
+def _require_shared(request: Request) -> None:
+    """Gate run creation on the shared token (no-op in dev mode)."""
+    expected = _api_token()
+    if not expected:
+        return
+    got = _credential(request)
+    if not got:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    if not hmac.compare_digest(got, expected):
+        raise HTTPException(status_code=403, detail="wrong token")
+
+
+def _require_ownership(request: Request, run: dict) -> None:
+    """Gate run-scoped endpoints on the per-run secret (no-op in dev mode).
+    The run token is unguessable and only ever returned to the creator, so
+    it doubles as the ownership proof — no per-user accounts needed."""
+    if not _token_mode():
+        return
+    got = _credential(request) or ""
+    if not hmac.compare_digest(got, run.get("run_token") or ""):
+        raise HTTPException(status_code=403, detail="not your run")
+
+
+def _ttl_s() -> float:
+    try:
+        return max(60.0, float(os.getenv("ARTIFACT_TTL_S", str(ARTIFACT_TTL_S))))
+    except ValueError:
+        return float(ARTIFACT_TTL_S)
+
+
+def _sweep_expired(now: float | None = None) -> list:
+    """Delete terminal runs older than the TTL: frames, tmpdirs, snapshots,
+    registry entries. Running runs are never touched. Returns swept ids."""
+    now = time.time() if now is None else now
+    ttl = _ttl_s()
+    swept = []
+    with _registry_lock:
+        for rid, run in list(_registry.items()):
+            if run["status"] == "running":
+                continue
+            finished = run.get("finished_at") or run.get("created", now)
+            if now - finished < ttl:
+                continue
+            tmpdir = run.get("tmpdir")
+            if tmpdir:
+                try:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                except Exception:
+                    pass
+            del _registry[rid]
+            swept.append(rid)
+    return swept
+
+
+def _sweeper_loop():
+    while True:
+        time.sleep(60)
+        try:
+            _sweep_expired()
+        except Exception:
+            pass
+
+
+def _ensure_sweeper():
+    global _sweeper_started
+    with _registry_lock:
+        if _sweeper_started:
+            return
+        _sweeper_started = True
+    thread = threading.Thread(target=_sweeper_loop, daemon=True)
+    thread.start()
 
 
 def _new_run_id() -> str:
@@ -205,12 +314,14 @@ def _drive(run: dict, saved_path: str):
             saved_path, rules, run["retries"], None, quiet=True,
             on_stage=on_stage, on_attempt=on_attempt, on_frames=on_frames,
             should_cancel=run["cancel_flag"].is_set,
+            sandbox_backend=run.get("sandbox_backend"),
         )
     except Exception as e:  # noqa: BLE001 — driver boundary: record, never crash the thread
         result = {"success": False, "attempts": 0, "input_hash": None,
                   "rows_in": 0, "rows_out": 0,
                   "error": f"driver crashed: {type(e).__name__}: {e}"}
     run["result"] = result
+    run["finished_at"] = time.time()
     run["final_code"] = (run["attempts"].get(result.get("attempts", 0), {})
                          .get("code", ""))
     ok = result.get("success") is True
@@ -251,8 +362,19 @@ def health():
 
 
 @app.post("/runs", status_code=202)
-async def create_run(file: UploadFile = File(...), rules: str = Form(...),
+async def create_run(request: Request, file: UploadFile = File(...), rules: str = Form(...),
                      retries: int = Form(3)):
+    _require_shared(request)
+    # Docker is mandatory in token (shared) mode: the gate's documented
+    # residuals (composed strings, untraced aliases) are acceptable for
+    # your own data behind localhost, not for anyone else's. Fail fast
+    # here, never silently downgrade to subprocess.
+    force_docker = _token_mode()
+    if force_docker:
+        from sandbox import _check_docker
+        bad = _check_docker()
+        if bad:
+            raise HTTPException(status_code=503, detail=f"docker backend required: {bad}")
     if _active_run() is not None:
         raise HTTPException(status_code=409, detail="a live run is already boarding")
     name = (file.filename or "upload").lower()
@@ -261,8 +383,6 @@ async def create_run(file: UploadFile = File(...), rules: str = Form(...),
     if not (rules or "").strip():
         raise HTTPException(status_code=400, detail="rules must not be empty")
     retries = max(1, min(5, int(retries)))
-    import os
-    import tempfile
     tmpdir = tempfile.mkdtemp(prefix="pf_run_")
     saved = os.path.join(tmpdir, os.path.basename(file.filename or "upload"))
     size = 0
@@ -285,16 +405,19 @@ async def create_run(file: UploadFile = File(...), rules: str = Form(...),
            "status": "running", "seq": 0, "events": [],
            "cond": threading.Condition(), "attempts": {},
            "cancel_flag": threading.Event(),
-           "created": time.time()}
+           "run_token": secrets.token_hex(16),
+           "sandbox_backend": "docker" if force_docker else None,
+           "tmpdir": tmpdir, "created": time.time(), "finished_at": None}
     with _registry_lock:
         # Bound memory: previous runs keep events/snapshots for replay but
         # drop frames (downloads stay available for the latest run only).
         for old in _registry.values():
             old.pop("frames", None)
         _registry[run_id] = run
+    _ensure_sweeper()
     thread = threading.Thread(target=_drive, args=(run, saved), daemon=True)
     thread.start()
-    return {"run_id": run_id}
+    return {"run_id": run_id, "run_token": run["run_token"]}
 
 
 def _get_run(run_id: str) -> dict:
@@ -314,6 +437,7 @@ def _sse_line(event: dict) -> str:
 @app.get("/runs/{run_id}/events")
 def run_events(run_id: str, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     last = request.headers.get("last-event-id")
     try:
         resume_from = int(last) if last is not None else -1
@@ -342,8 +466,9 @@ def run_events(run_id: str, request: Request):
 
 
 @app.get("/runs/{run_id}")
-def run_snapshot(run_id: str):
+def run_snapshot(run_id: str, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     result = run.get("result") or {}
     return {"run_id": run_id, "filename": run["filename"],
             "status": run["status"],
@@ -354,8 +479,9 @@ def run_snapshot(run_id: str):
 
 
 @app.get("/runs/{run_id}/attempts/{n}")
-def run_attempt(run_id: str, n: int):
+def run_attempt(run_id: str, n: int, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     snap = run["attempts"].get(n)
     if snap is None:
         raise HTTPException(status_code=404, detail="attempt not reached yet")
@@ -363,8 +489,9 @@ def run_attempt(run_id: str, n: int):
 
 
 @app.get("/runs/{run_id}/cleaned.csv")
-def run_cleaned_csv(run_id: str):
+def run_cleaned_csv(run_id: str, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     frames = run.get("frames") or {}
     cleaned = frames.get("cleaned")
     if not isinstance(cleaned, pd.DataFrame):
@@ -377,8 +504,9 @@ def run_cleaned_csv(run_id: str):
 
 
 @app.get("/runs/{run_id}/pipeline.py")
-def run_pipeline_py(run_id: str):
+def run_pipeline_py(run_id: str, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     result = run.get("result") or {}
     code = run.get("final_code") or ""
     schema_json = run.get("schema_json") or "{}"
@@ -393,8 +521,9 @@ def run_pipeline_py(run_id: str):
 
 
 @app.post("/runs/{run_id}/cancel")
-def run_cancel(run_id: str):
+def run_cancel(run_id: str, request: Request):
     run = _get_run(run_id)
+    _require_ownership(request, run)
     if run["status"] != "running":
         return {"run_id": run_id, "status": run["status"]}
     run["cancel_flag"].set()

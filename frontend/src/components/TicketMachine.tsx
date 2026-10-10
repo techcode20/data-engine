@@ -86,12 +86,13 @@ export function TicketMachine() {
   const live = useTransit((s) => s.live);
   const attempt = useTransit((s) => s.attempt);
   const score = useTransit((s) => s.score);
-  const liveActive = liveMode && live && file && file.kind !== "sample";
+  const liveActive = liveMode && live && live.runToken && file && file.kind !== "sample";
+  const liveGone = liveMode && ticketsOut && file && file.kind !== "sample" && (!live || !live.runToken);
   const isDemo = !liveActive && (!file || file.kind === "sample");
   const liveTickets = liveActive
     ? [
-        { name: `${file!.name.replace(/\.[^.]+$/, "")}.cleaned.csv`, href: `${live!.base}/runs/${live!.runId}/cleaned.csv`, color: "#15803d", blurb: "validated rows — straight from the backend" },
-        { name: "pipeline.py", href: `${live!.base}/runs/${live!.runId}/pipeline.py`, color: "#b91c1c", blurb: "the validated clean() that ran — replay it anywhere" },
+        { name: `${file!.name.replace(/\.[^.]+$/, "")}.cleaned.csv`, href: `${live!.base}/runs/${live!.runId}/cleaned.csv?token=${encodeURIComponent(live!.runToken!)}`, color: "#15803d", blurb: "validated rows — straight from the backend" },
+        { name: "pipeline.py", href: `${live!.base}/runs/${live!.runId}/pipeline.py?token=${encodeURIComponent(live!.runToken!)}`, color: "#b91c1c", blurb: "the validated clean() that ran — replay it anywhere" },
       ]
     : [];
   return (
@@ -102,6 +103,10 @@ export function TicketMachine() {
       {!ticketsOut ? (
         <p className="mt-2 text-sm text-[#a8a091]">
           {phase === "idle" ? "Tickets print when a run completes all turnstiles." : "Printing… hold your ticket until validation clears."}
+        </p>
+      ) : liveGone ? (
+        <p role="note" className="font-board mt-2 rounded-lg border-2 border-dashed border-[#f59e0b] p-2 text-[11px] text-[#fcd34d]">
+          This tab forgot the run token on refresh — DEPART anew to reprint live tickets.
         </p>
       ) : liveActive ? (
         <>

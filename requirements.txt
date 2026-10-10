@@ -3,9 +3,15 @@
 # Install with: pip install -r requirements.txt
 # Audit with: pip-audit -r requirements.txt
 # pyarrow carries the sandbox result transport (parquet, never pickle).
-# NOTE: on Windows machines with WDAC/Device Guard, pyarrow's _parquet DLL
-# may be blocked — the sandbox then refuses to run (loudly) rather than
-# falling back to pickle. Full execution tests run on CI/Linux.
+# NOTE: on Windows machines with WDAC/Device Guard demanding enterprise
+# signing, pyarrow's vendored msvcp140_atomic_wait-*.dll is blocked, which
+# breaks `import pyarrow` outright. Workaround that survived on one such
+# box: back up that file under venv/Lib/site-packages/pyarrow.libs/ and
+# copy C:\Windows\System32\msvcp140_atomic_wait.dll over it under the same
+# hashed name (same Microsoft CRT family, properly signed). Any pyarrow
+# reinstall/upgrade restores the blocked copy — redo the swap afterwards.
+# When in doubt the sandbox refuses loudly (no pickle fallback); full
+# execution tests run on CI/Linux regardless.
 pandas==3.0.5
 pyarrow==26.0.0
 pandera==0.33.1

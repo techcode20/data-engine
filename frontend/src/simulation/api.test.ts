@@ -32,10 +32,10 @@ function mockFetchOnce(handler: (url: string, init?: RequestInit) => unknown) {
   return calls;
 }
 
-const okRun = () => ({
+const okRun = (token = "") => ({
   ok: true,
   status: 202,
-  json: async () => ({ run_id: "abc123" }),
+  json: async () => ({ run_id: "abc123", run_token: token || undefined }),
   text: async () => "",
 });
 const okSnapshot = () => ({
@@ -164,4 +164,49 @@ test("replayAttempt rebuilds the attempt from a server snapshot", async () => {
     version: 2,
     source: "def clean(df):\n    return df",
   });
+});
+
+test("shared token rides POST; run token rides stream, replay, and cancel", async () => {
+  const calls = mockFetchOnce((url) => {
+    if (url.endsWith("/cancel")) {
+      return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+    }
+    if (url.includes("/attempts/")) return okSnapshot();
+    return okRun("run-secret");
+  });
+  const backend = new ApiBackend();
+  const seen: Array<{ id: string; token: string }> = [];
+  backend.onRunId = (id, token) => seen.push({ id, token });
+  backend.onEvent(() => {});
+  backend.setApiToken("shared-secret");
+  backend.setPayload(new File(["id\n1\n"], "t.csv", { type: "text/csv" }), "r");
+  backend.start();
+  await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+  expect(seen).toEqual([{ id: "abc123", token: "run-secret" }]);
+  const post = calls.find((c) => c.url.endsWith("/runs"));
+  expect((post?.init?.headers as Record<string, string>)["Authorization"]).toBe(
+    "Bearer shared-secret",
+  );
+  // EventSource cannot set headers: ownership rides the query string.
+  expect(MockEventSource.instances[0].url).toContain("?token=run-secret");
+  await backend.replayAttempt(1);
+  const replay = calls.find((c) => c.url.includes("/attempts/"));
+  expect((replay?.init?.headers as Record<string, string>)["Authorization"]).toBe(
+    "Bearer run-secret",
+  );
+  backend.stop();
+  const cancel = calls.find((c) => c.url.endsWith("/cancel"));
+  expect((cancel?.init?.headers as Record<string, string>)["Authorization"]).toBe(
+    "Bearer run-secret",
+  );
+});
+
+test("401 from a token-guarded backend surfaces a token hint", async () => {
+  mockFetchOnce(() => ({ ok: false, status: 401, json: async () => ({}), text: async () => "no" }));
+  const backend = new ApiBackend();
+  const events = collect(backend);
+  backend.setPayload(new File(["id\n1\n"], "t.csv", { type: "text/csv" }), "r");
+  backend.start();
+  await vi.waitFor(() => expect(events.some((e) => e.type === "done")).toBe(true));
+  expect(events.find((e) => e.type === "error")?.text).toMatch(/token/);
 });

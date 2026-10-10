@@ -6,6 +6,10 @@ Defense in depth (see SECURITY notes in README):
    Only these survive: ``pd.<allowlisted>`` names, methods/attributes on the
    dataframe (or values derived from it) except known file-writing methods,
    a small set of pure builtins, and names bound inside the function itself.
+   A second layer scans interpreted strings: string arguments naming a
+   blocked method are rejected (dict keys and print() text are data, not
+   code, and stay allowed); agg/apply/transform accept only a fixed set of
+   aggregation names; path-like keyword names (buf, fname, …) are rejected.
    Everything else — imports, class definitions, unknown names or calls,
    dunder access — is rejected without executing anything.
 2. Process isolation — approved code runs in a child Python process (or an
@@ -21,7 +25,11 @@ pickle (dump direction is safe — unpickling is where gadgets fire — and the
 loader is the sacrificial child); the child shares the filesystem with the
 user in subprocess mode; treat hostile datasets like hostile input — use
 --strict, review --dry-run output, and prefer containers for truly
-untrusted sources.
+untrusted sources. Static analysis limits: composed strings (``"to_" +
+"csv"``, f-string joints) are not constant-folded, and a dict bound to a
+name (``d = {"a": "to_csv"}; df.agg(d)``) is not traced — single-constant
+aliases (``fn = "mean"``) are. Anything downstream of those residuals still
+faces the subprocess/docker boundary and the data-only result transport.
 """
 import ast
 import json
@@ -170,6 +178,92 @@ def _attr_violation(attr: str, node: ast.Attribute) -> str | None:
     return None
 
 
+# Aggregation names a cleaning function may pass to agg/aggregate/apply/
+# transform. Anything else in that position is either a blocked method
+# smuggled as a string ("to_csv") or an unknown callable.
+_AGG_FUNCS = frozenset({
+    "sum", "mean", "min", "max", "count", "first", "last", "median", "nunique",
+})
+_AGG_METHODS = frozenset({"agg", "aggregate", "apply", "transform"})
+
+# Keyword names that can reference files. Checked on every call regardless
+# of method — no legitimate cleaning idiom writes through these.
+_PATH_KWARGS = frozenset({
+    "path_or_buf", "buf", "fname", "excel_writer",
+    "filepath", "filepath_or_buffer", "filename", "file_path",
+})
+
+
+def _norm_str(s: str) -> str:
+    return s.strip().lower()
+
+
+def _string_aliases(tree: ast.AST) -> dict:
+    """Names bound once to a plain string constant: fn = "mean". One step
+    of alias resolution so df.agg(fn) is judged by the string's content."""
+    aliases = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            aliases[node.targets[0].id] = node.value.value
+    return aliases
+
+
+def _arg_strings(node: ast.AST):
+    """String constants under a call argument. Dict KEYS are skipped (column
+    names and rename mappings are identifiers, never interpreted); dict
+    values, list elements, and f-string literal parts are checked."""
+    if isinstance(node, ast.Dict):
+        for v in node.values:
+            yield from _arg_strings(v)
+        return
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        yield node.value
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _arg_strings(child)
+
+
+def _resolve_value(node: ast.AST, aliases: dict):
+    """Resolve an agg-spec argument to a string when it trivially is one;
+    None otherwise (lambdas, calls, unresolvable names — their bodies are
+    gated separately, so they pass this check)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    return None
+
+
+def _check_agg_spec(arg: ast.AST, aliases: dict) -> str | None:
+    """Violation message for a non-conforming agg/apply/transform function
+    spec, else None. Containers recurse (dict values only — keys skipped)."""
+    if isinstance(arg, (ast.List, ast.Tuple)):
+        for e in arg.elts:
+            bad = _check_agg_spec(e, aliases)
+            if bad:
+                return bad
+        return None
+    if isinstance(arg, ast.Dict):
+        for v in arg.values:
+            bad = _check_agg_spec(v, aliases)
+            if bad:
+                return bad
+        return None
+    s = _resolve_value(arg, aliases)
+    if s is None:
+        return None
+    n = _norm_str(s)
+    if n in _AGG_FUNCS:
+        return None
+    if n in _DF_IO_METHODS or n.startswith("to_"):
+        return f"string '{s}' would resolve to a blocked method"
+    return (f"agg/apply/transform function must be one of "
+            f"{sorted(_AGG_FUNCS)}, got '{s}'")
+
+
 def gate_code(code_str: str) -> list[str]:
     """Static allowlist scan. Returns violations (empty = approved to run).
 
@@ -184,6 +278,7 @@ def gate_code(code_str: str) -> list[str]:
                for n in tree.body):
         return ["no top-level function clean(df) defined"]
     bound = _bound_names(tree)
+    aliases = _string_aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             violations.append("import statements are not allowed (pd is pre-imported)")
@@ -195,13 +290,35 @@ def gate_code(code_str: str) -> list[str]:
             violations.append("global/nonlocal statements are not allowed")
         elif isinstance(node, (ast.Yield, ast.YieldFrom)):
             violations.append("generators are not allowed (clean must return a DataFrame)")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id not in _BUILTIN_ALLOWLIST and node.func.id not in bound:
-                violations.append(f"call to {node.func.id}() is not allowed")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            bad = _attr_violation(node.func.attr, node.func)
-            if bad:
-                violations.append(bad)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id not in _BUILTIN_ALLOWLIST and func.id not in bound:
+                    violations.append(f"call to {func.id}() is not allowed")
+                fname = func.id
+            elif isinstance(func, ast.Attribute):
+                bad = _attr_violation(func.attr, func)
+                if bad:
+                    violations.append(bad)
+                fname = func.attr
+            else:
+                fname = ""
+            for kw in node.keywords:
+                if kw.arg in _PATH_KWARGS:
+                    violations.append(f"keyword argument '{kw.arg}' can reference files")
+            # String arguments are checked where they can be interpreted.
+            # print() text is never interpreted (exempt); dict keys are
+            # identifiers, skipped inside _arg_strings.
+            if fname != "print":
+                for a in list(node.args) + [kw.value for kw in node.keywords]:
+                    for s in _arg_strings(a):
+                        if _norm_str(s) in _DF_IO_METHODS:
+                            violations.append(f"string '{s}' matches a blocked method")
+            if (isinstance(func, ast.Attribute) and func.attr in _AGG_METHODS
+                    and node.args):
+                bad = _check_agg_spec(node.args[0], aliases)
+                if bad:
+                    violations.append(bad)
         elif isinstance(node, ast.Attribute):
             bad = _attr_violation(node.attr, node)
             if bad:

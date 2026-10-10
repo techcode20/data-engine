@@ -23,11 +23,13 @@ function isStageEvent(e: EngineEvent): e is Extract<EngineEvent, { type: "stage"
  *  stream, cancels the server run, and drops everything after. */
 export class ApiBackend {
   trainPos = { x: 90, y: 540 };
-  onRunId: ((id: string) => void) | null = null;
+  onRunId: ((id: string, token: string) => void) | null = null;
 
   private emit: (e: EngineEvent) => void = () => {};
   private es: EventSource | null = null;
   private runId: string | null = null;
+  private runToken: string | null = null;
+  private apiToken: string | null = null;
   private payload: { file: File; rules: string; retries: number } | null = null;
   private paused = false;
   private dead = false;
@@ -39,6 +41,11 @@ export class ApiBackend {
   }
   setPayload(file: File, rules: string, retries = 3) {
     this.payload = { file, rules, retries };
+  }
+  /** Shared server token (memory-only, never persisted). Sent as
+   *  Authorization on POST; the per-run token rides query/header after. */
+  setApiToken(t: string) {
+    this.apiToken = t.trim() || null;
   }
   setMobile(m: boolean) {
     this.mobile = m;
@@ -76,13 +83,21 @@ export class ApiBackend {
       return;
     }
     const { file, rules, retries } = this.payload;
-    let runId: string;
+    let runId: string = "";
+    let runToken: string | null = null;
     try {
       const form = new FormData();
       form.append("file", file, file.name);
       form.append("rules", rules);
       form.append("retries", String(retries));
-      const resp = await fetch(`${API_BASE}/runs`, { method: "POST", body: form });
+      const headers: Record<string, string> = {};
+      if (this.apiToken) headers["Authorization"] = `Bearer ${this.apiToken}`;
+      const resp = await fetch(`${API_BASE}/runs`, { method: "POST", headers, body: form });
+      if (resp.status === 401 || resp.status === 403) {
+        this.emit({ type: "error", text: "backend wants a token — paste the API token at the gate" });
+        this.emit({ type: "done", attempts: 0, status: "failed" });
+        return;
+      }
       if (resp.status === 409) {
         this.emit({ type: "error", text: "the backend is already running a live consist — wait for it to arrive" });
         this.emit({ type: "done", attempts: 0, status: "failed" });
@@ -94,15 +109,23 @@ export class ApiBackend {
         this.emit({ type: "done", attempts: 0, status: "failed" });
         return;
       }
-      runId = (await resp.json()).run_id as string;
+      const body = (await resp.json()) as { run_id: string; run_token?: string };
+      runId = body.run_id;
+      runToken = body.run_token ?? null;
     } catch {
       this.emit({ type: "error", text: `live backend unreachable at ${API_BASE} — is uvicorn running? (python -m uvicorn backend_api:app)` });
       this.emit({ type: "done", attempts: 0, status: "failed" });
       return;
     }
     this.runId = runId;
-    this.onRunId?.(runId);
-    const es = new EventSource(`${API_BASE}/runs/${runId}/events`);
+    this.runToken = runToken;
+    this.onRunId?.(runId, this.runToken ?? "");
+    // EventSource cannot set headers: ownership rides the query string.
+    // (TLS/VPN in front; access logs may record URLs — see backend docstring.)
+    const streamUrl =
+      `${API_BASE}/runs/${runId}/events` +
+      (this.runToken ? `?token=${encodeURIComponent(this.runToken)}` : "");
+    const es = new EventSource(streamUrl);
     this.es = es;
     es.onmessage = (msg) => {
       try {
@@ -134,9 +157,13 @@ export class ApiBackend {
     this.buffer = [];
     this.stopStream();
     const id = this.runId;
+    const token = this.runToken;
     this.runId = null;
+    this.runToken = null;
     if (id) {
-      void fetch(`${API_BASE}/runs/${id}/cancel`, { method: "POST" }).catch(() => {});
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      void fetch(`${API_BASE}/runs/${id}/cancel`, { method: "POST", headers }).catch(() => {});
     }
   }
 
@@ -151,13 +178,14 @@ export class ApiBackend {
     this.stopStream();
     this.dead = false;
     this.buffer = [];
-    this.paused = false;
-    let snap: {
+    this.paused = false;    let snap: {
       code: string; checks: CheckItem[]; score: number;
       columns: string[]; rows: BatchRow[]; states: CarriageState[];
     };
     try {
-      const resp = await fetch(`${API_BASE}/runs/${this.runId}/attempts/${n}`);
+      const headers: Record<string, string> = {};
+      if (this.runToken) headers["Authorization"] = `Bearer ${this.runToken}`;
+      const resp = await fetch(`${API_BASE}/runs/${this.runId}/attempts/${n}`, { headers });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       snap = (await resp.json()) as typeof snap;
     } catch {
