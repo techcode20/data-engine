@@ -1,6 +1,6 @@
 [project]
 name = "data-engine"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
     "pandas", "pyarrow", "pandera", "google-genai", "python-dotenv",
     "pyyaml", "requests", "pytest", "pytest-cov",

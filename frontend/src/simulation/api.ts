@@ -94,12 +94,19 @@ export class ApiBackend {
       if (this.apiToken) headers["Authorization"] = `Bearer ${this.apiToken}`;
       const resp = await fetch(`${API_BASE}/runs`, { method: "POST", headers, body: form });
       if (resp.status === 401 || resp.status === 403) {
-        this.emit({ type: "error", text: "backend wants a token — paste the API token at the gate" });
+        this.emit({ type: "error", text: "backend refused the upload (not authorized) — the edge proxy should inject the token (see deploy/README)" });
         this.emit({ type: "done", attempts: 0, status: "failed" });
         return;
       }
       if (resp.status === 409) {
-        this.emit({ type: "error", text: "the backend is already running a live consist — wait for it to arrive" });
+        let detail = "the backend is already running a live consist — wait for it to arrive";
+        try {
+          const body = (await resp.json()) as { detail?: string };
+          if (body.detail) detail = body.detail.slice(0, 200);
+        } catch {
+          /* keep default */
+        }
+        this.emit({ type: "error", text: detail });
         this.emit({ type: "done", attempts: 0, status: "failed" });
         return;
       }

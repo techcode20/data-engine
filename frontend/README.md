@@ -38,11 +38,14 @@ npm run test:e2e   # playwright (chromium): mobile sheet focus, focus-visible ri
 
 Uploads over 10 MB are refused at the gate; run state persists across refresh in `sessionStorage` (mid-run restores paused for re-dispatch); a Cancel button parks the run with visited stations marked CANCELLED.
 
-## Plugging in the real backend
+## Live backend (implemented)
 
-1. Implement `PipelineBackend` in `src/simulation/engine.ts` as `ApiBackend`: drive stage events from `POST /ingest → /infer → /generate → /sandbox → /validate` (SSE or websocket), keep GSAP motion driven by arrival events.
-2. Replace the `TransitEngine` wiring in `src/store.ts` (`depart`/`togglePause`/`scrubToAttempt`) with the live stream.
-3. Upload (`GateHero.loadFile`) already parses CSV/JSON locally — POST the payload to `/ingest` instead of running the script.
-4. Keep `script.ts` + `simcheck` as the offline demo and regression net.
+`src/simulation/api.ts` (`ApiBackend`) implements the same `PipelineBackend`
+contract against `POST /runs` + SSE (`backend_api.py`); the store picks it
+in live mode (`?live=1`, LIVE toggle), uploads POST raw bytes, and tickets /
+magnifier / poster / scrubber all read live data. API base: `VITE_API_URL`
+baked at build time (`.env.production` sets `/api` for the Caddy-served
+website; dev server and vitest default to `http://127.0.0.1:8000`).
+`script.ts` + `simcheck` stay as the offline demo and regression net.
 
-No map component needs to change — only the event source.
+No map component needed to change — only the event source.

@@ -38,6 +38,9 @@ export interface SegmentCfg {
   label?: string;
   labelDx?: number;
   labelDy?: number;
+  /** Mobile overrides — the vertical spine crowds differently. */
+  mLabelDx?: number;
+  mLabelDy?: number;
 }
 
 export const DESKTOP_VB = { w: 1200, h: 680 };
@@ -62,27 +65,34 @@ export const STATIONS: StationCfg[] = [
 ];
 
 export const SEGMENTS: SegmentCfg[] = [
-  { id: "main-a", line: "main", pts: [[90, 540], [530, 540]], mpts: [[170, 110], [170, 410]], style: "solid" },
-  { id: "main-b", line: "main", pts: [[530, 540], [970, 540]], mpts: [[170, 410], [170, 710]], style: "solid", label: "Main Line" },
+  // Main Line name rides the empty stretch between Intake and Schema —
+  // the main-b midpoint sits exactly on Sandbox Terminal's glyph.
+  { id: "main-a", line: "main", pts: [[90, 540], [530, 540]], mpts: [[170, 110], [170, 410]], style: "solid", label: "Main Line", labelDx: -110, mLabelDx: 34, mLabelDy: 0 },
+  { id: "main-b", line: "main", pts: [[530, 540], [970, 540]], mpts: [[170, 410], [170, 710]], style: "solid" },
   {
     id: "validation-branch", line: "validation", pts: [[970, 650], [970, 540]], mpts: [[90, 710], [170, 710]],
-    style: "solid", label: "Validation Line", labelDx: 12, labelDy: 40,
+    style: "solid", label: "Validation Line", labelDx: 40, labelDy: 40,
+    // Mobile: captions the panel zone from clear space below it.
+    mLabelDx: 10, mLabelDy: 185,
   },
   {
     id: "repair-out", line: "repair", pts: [[530, 540], [620, 450], [700, 450]], mpts: [[170, 410], [240, 480], [300, 480]],
-    style: "solid", label: "Repair Line",
+    style: "solid", label: "Repair Line", labelDy: -28, mLabelDx: -136, mLabelDy: -18,
   },
   {
     id: "repair-reroute", line: "repair", pts: [[760, 450], [850, 540], [920, 540]], mpts: [[300, 480], [230, 550], [170, 550], [170, 560]],
-    style: "faint", reroute: true, label: "new track", labelDx: 0, labelDy: -14,
+    style: "faint", reroute: true, label: "new track", labelDx: -15, labelDy: 42,
+    mLabelDx: 45, mLabelDy: 18,
   },
   {
     id: "rejected-siding", line: "siding", pts: [[970, 540], [1095, 540]], mpts: [[170, 710], [300, 710]],
-    style: "dashed", label: "REJECTED", labelDx: -8, labelDy: -14,
+    style: "dashed", label: "REJECTED", labelDx: 30, labelDy: 26, mLabelDx: 30, mLabelDy: 26,
   },
   {
     id: "memory-line", line: "memory", pts: [[970, 540], [970, 160]], mpts: [[170, 710], [170, 900]],
-    style: "solid", label: "Memory Line", labelDx: 12, labelDy: 200,
+    style: "solid", label: "Memory Line", labelDx: 32, labelDy: -120,
+    // Mobile: right margin clear of the panel, REJECTED caption and archive name.
+    mLabelDx: 170, mLabelDy: 90,
   },
 ];
 

@@ -36,4 +36,31 @@ describe("snapshot restore", () => {
     expect(s.attempt).toBe(3);
     sessionStorage.clear();
   });
+
+  it("settles an orphaned live run to idle instead of a dead running phase", async () => {
+    // Refresh drops the memory-only run token, so the fresh tab can neither
+    // reattach nor cancel — replayAttempt would no-op and DEPART stays
+    // disabled forever. Settle to idle with file+rules kept instead.
+    const snapshot = {
+      v: 2,
+      file: { name: "x.csv", size: 10, rows: 2, cols: 1, kind: "csv" },
+      phase: "running",
+      attempt: 2,
+      maxAttempt: 2,
+      liveMode: true,
+      live: { runId: "abc123", base: "http://127.0.0.1:8000" },
+      rules: "id int",
+    };
+    sessionStorage.setItem("pf-transit-state", JSON.stringify(snapshot));
+    vi.resetModules();
+    const { useTransit } = await import("./store");
+    const s = useTransit.getState();
+    expect(s.phase).toBe("idle");
+    expect(s.needsReplay).toBe(false);
+    expect(s.paused).toBe(false);
+    expect(s.file?.name).toBe("x.csv");
+    expect(s.rules).toBe("id int");
+    expect(s.fileError).toMatch(/disconnected/);
+    sessionStorage.clear();
+  });
 });

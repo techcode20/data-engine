@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
+import { groupCars } from "../lib/consist";
 import { CARRIAGES, COLUMNS } from "../simulation/dataset";
 import { useTransit } from "../store";
 
@@ -11,11 +12,17 @@ export function CarriageMagnifier() {
   const liveRows = useTransit((s) => s.liveRows);
   const liveColumns = useTransit((s) => s.liveColumns);
   const scriptCar = selectedCarriage != null ? CARRIAGES[selectedCarriage] : null;
-  // Live runs: each sampled row rides as its own single-row carriage.
-  const liveRow = selectedCarriage != null ? liveRows[selectedCarriage] : null;
-  const car = liveRow
-    ? { label: `Live carriage ${selectedCarriage! + 1}`, rows: [liveRow] }
-    : scriptCar;
+  // Live runs: rows ride grouped into ≤4 display cars (see groupCars), so
+  // the magnifier opens the same batch the map shows — never a bare row.
+  const liveGroups = liveRows.length ? groupCars(carriages, liveRows) : [];
+  const liveCar =
+    selectedCarriage != null && liveGroups[selectedCarriage]
+      ? {
+          label: `Live batch ${selectedCarriage + 1} · rows ${liveGroups[selectedCarriage].range[0]}–${liveGroups[selectedCarriage].range[1]}`,
+          rows: liveGroups[selectedCarriage].rows,
+        }
+      : null;
+  const car = liveCar ?? scriptCar;
   const columns = liveRows.length && liveColumns.length ? liveColumns : [...COLUMNS];
   const state = selectedCarriage != null ? carriages[selectedCarriage] : null;
 

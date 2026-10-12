@@ -1,0 +1,27 @@
+# PipelineForge Transit — single-origin website.
+# Public browsers hit this Caddy only (via the Cloudflare tunnel). Caddy
+# serves the built site and proxies /api/* to uvicorn, injecting the
+# backend bearer token server-side so it never reaches the browser.
+#
+# Prerequisites on this host: Docker Desktop (SANDBOX_BACKEND=docker is
+# mandatory in token mode), PF_API_TOKEN in the environment, the built
+# site at ../frontend/dist (npm run build), uvicorn on :8000.
+
+{$SITE_HOST} {
+	# API: strip /api, forward, inject the shared token.
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:8000 {
+			header_up Authorization "Bearer {$PF_API_TOKEN}"
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Website: static dist build, SPA fallback for the single route.
+	handle {
+		root * ../frontend/dist
+		file_server
+		try_files {path} /index.html
+	}
+}

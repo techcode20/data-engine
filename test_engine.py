@@ -175,3 +175,36 @@ def test_process_one_smart_parse_reduces_llm_work(mock_schema_gen, mock_code_gen
 
     bad = process_one(csv_path, rules, retries=1, output_path=None, smart_parse_cols=False)
     assert bad["success"] is False
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_codegen_sees_relaxed_schema_not_sampled_claim(mock_schema_gen, mock_code_gen, tmp_path):
+    # Regression: a sampled unique:true on a duplicated column made the
+    # model dedupe 1020 rows to 64. The model must see the grounded schema.
+    csv_path = _write_temp_csv(tmp_path, "id,email\n1,a@x.io\n2,a@x.io\n3,b@x.io\n")
+    mock_schema_gen.return_value = ('{"id": {"type": "str", "nullable": false}, '
+                                    '"email": {"type": "str", "nullable": false, "unique": true}}')
+    mock_code_gen.return_value = "def clean(df):\n    return df"
+
+    result = process_one(csv_path, "id is required", retries=1, output_path=None)
+
+    assert result["success"] is True
+    assert result["rows_out"] == 3
+    prompt = mock_code_gen.call_args[0][0]
+    assert '"unique": false' in prompt  # email claim relaxed before codegen
+    assert '"unique": true' not in prompt
+
+@patch("code_gen.generate")
+@patch("schema_inference.generate")
+def test_demanded_unique_fails_fast_without_burn(mock_schema_gen, mock_code_gen, tmp_path):
+    csv_path = _write_temp_csv(tmp_path, "id,email\n1,a@x.io\n2,a@x.io\n")
+    mock_schema_gen.return_value = ('{"id": {"type": "str"}, '
+                                    '"email": {"type": "str", "unique": true}}')
+    mock_code_gen.return_value = "def clean(df):\n    return df"
+
+    result = process_one(csv_path, "email must be unique", retries=5, output_path=None)
+
+    assert result["success"] is False
+    assert result["attempts"] == 0  # no burned retries on the unsatisfiable
+    assert "unsatisfiable" in result["error"]
+    assert mock_code_gen.call_count == 0  # failed before any codegen

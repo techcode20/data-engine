@@ -129,7 +129,10 @@ def test_single_flight_409_and_cancel(monkeypatch):
     first = _post_run()
     assert first.status_code == 202
     assert gate.wait(timeout=30)
-    assert _post_run().status_code == 409  # second run refused while one boards
+    refused = _post_run()
+    assert refused.status_code == 409  # second run refused while one boards
+    assert "already boarding" in refused.json()["detail"]
+    assert "started" in refused.json()["detail"] and "ago" in refused.json()["detail"]
     run_id = first.json()["run_id"]
     cancel = client.post(f"/runs/{run_id}/cancel")
     assert cancel.status_code == 200
@@ -141,6 +144,28 @@ def test_single_flight_409_and_cancel(monkeypatch):
 
 def test_health():
     assert client.get("/health").json()["ok"] is True
+
+
+@pytest.mark.parametrize("ok,expected", [(True, "passed"), (False, "failed")])
+def test_teardown_resolves_repair_badge(monkeypatch, ok, expected):
+    """The engine only marks repair passed when another attempt starts, so
+    without teardown help a terminal run leaves Repair Depot RUNNING —
+    looking stuck while the board already says HELD/ARRIVED."""
+
+    def fake_process_one(*a, **k):
+        return {"success": ok, "attempts": 1, "input_hash": "h",
+                "rows_in": 1, "rows_out": 1 if ok else 0,
+                "error": None if ok else "boom"}
+
+    monkeypatch.setattr(backend_api, "process_one", fake_process_one)
+    run_id = _post_run().json()["run_id"]
+    events = _stream_events(run_id)
+    assert events[-1]["type"] == "done"
+    repair_statuses = [e["status"] for e in events
+                       if e["type"] == "stage" and e["id"] == "repair"]
+    assert repair_statuses, "no repair event emitted at teardown"
+    assert repair_statuses[-1] == expected
+    assert repair_statuses[-1] != "running"
 
 
 def _token_post(headers=None, **kw):

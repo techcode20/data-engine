@@ -12,7 +12,7 @@ export function ServiceTicker() {
   const all = [...DEFAULT_ALERTS, ...alerts];
   const loop = [...all, ...all];
   return (
-    <div className="fixed inset-x-0 bottom-0 z-30 border-t-[3px] border-[#141210] bg-[#facc15]" role="marquee" aria-label="Service alerts">
+    <div className="ticker-pause fixed inset-x-0 bottom-0 z-30 border-t-[3px] border-[#141210] bg-[#facc15]" role="marquee" aria-label="Service alerts">
       <div className="flex items-center gap-2 overflow-hidden px-3 py-1.5">
         <Megaphone size={14} className="shrink-0" aria-hidden />
         <div className="overflow-hidden font-board text-[11px] font-semibold sm:text-xs">

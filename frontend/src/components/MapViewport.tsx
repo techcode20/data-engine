@@ -2,7 +2,7 @@ import { Minus, Plus, Scan, Video, VideoOff } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { markMapDragged } from "../lib/mapGesture";
 import { engineRef, useTransit } from "../store";
-import { DESKTOP_VB, MOBILE_VB } from "../transit/mapConfig";
+import { DESKTOP_VB, MOBILE_VB, STATIONS } from "../transit/mapConfig";
 
 interface Props {
   children: ReactNode;
@@ -20,6 +20,9 @@ export function MapViewport({ children }: Props) {
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinchD0 = useRef(0);
   const raf = useRef(0);
+  /** Set once the operator pans/zooms — auto-fit (load/resize) then leaves
+   *  their framing alone until they press fit again. */
+  const touched = useRef(false);
 
   const vb = mobile ? MOBILE_VB : DESKTOP_VB;
 
@@ -37,6 +40,37 @@ export function MapViewport({ children }: Props) {
     v.x = cx - (cx - v.x) * s;
     v.y = cy - (cy - v.y) * s;
     v.k = k2;
+    touched.current = true;
+    apply();
+  };
+
+  /** Fit the map to its content (stations + siding + turnstile panel) with
+   *  padding, clamped to the usual zoom range. Runs on load, on layout
+   *  flip, and on window resize until the operator frames it themselves. */
+  const fit = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const r = svg.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    const pts = STATIONS.map((s) => (mobile ? s.mpos : s.pos));
+    const extra: Array<readonly [number, number]> = mobile ? [] : [[1095, 540], [830, 677]];
+    const xs = [...pts.map((p) => p[0]), ...extra.map((p) => p[0])];
+    const ys = [...pts.map((p) => p[1]), ...extra.map((p) => p[1])];
+    const pad = mobile ? 40 : 60;
+    const x0 = Math.max(0, Math.min(...xs) - pad);
+    const x1 = Math.min(vb.w, Math.max(...xs) + pad);
+    const y0 = Math.max(0, Math.min(...ys) - pad);
+    const y1 = Math.min(vb.h, Math.max(...ys) + pad);
+    if (x1 <= x0 || y1 <= y0) return;
+    const k = Math.min(4, Math.max(0.6, Math.min(vb.w / (x1 - x0), vb.h / (y1 - y0))));
+    const sx = r.width / vb.w;
+    const sy = r.height / vb.h;
+    view.current = {
+      k,
+      x: r.width / 2 - ((x0 + x1) / 2) * k * sx,
+      y: r.height / 2 - ((y0 + y1) / 2) * k * sy,
+    };
+    touched.current = false;
     apply();
   };
 
@@ -65,6 +99,7 @@ export function MapViewport({ children }: Props) {
       v.x = cx - (cx - v.x) * s;
       v.y = cy - (cy - v.y) * s;
       v.k = k2;
+      touched.current = true;
       const g = gRef.current;
       if (g) g.setAttribute("transform", `translate(${v.x} ${v.y}) scale(${v.k})`);
     };
@@ -90,6 +125,7 @@ export function MapViewport({ children }: Props) {
       const v = view.current;
       v.x += e.clientX - prev.x;
       v.y += e.clientY - prev.y;
+      touched.current = true;
       apply();
       if (downPos.current && Math.hypot(e.clientX - downPos.current.x, e.clientY - downPos.current.y) > 6) {
         markMapDragged();
@@ -139,8 +175,17 @@ export function MapViewport({ children }: Props) {
 
   // Reset view when layout flips.
   useEffect(() => {
-    view.current = { x: 0, y: 0, k: 1 };
-    apply();
+    fit();
+  }, [mobile]);
+
+  // Refit on window resize until the operator frames it themselves.
+  // Follow mode owns the camera while active, so leave it alone there.
+  useEffect(() => {
+    const onResize = () => {
+      if (!touched.current && !useTransit.getState().follow) fit();
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, [mobile]);
 
   return (
@@ -194,11 +239,9 @@ export function MapViewport({ children }: Props) {
           <Minus size={15} />
         </button>
         <button
-          onClick={() => {
-            view.current = { x: 0, y: 0, k: 1 };
-            apply();
-          }}
-          aria-label="Reset view"
+          onClick={() => fit()}
+          aria-label="Fit map to content"
+          title="Fit map to content"
           className="rounded-lg border-2 border-[#141210] bg-[#fffdf6] p-1.5 shadow hover:bg-[#f6f3ea]"
         >
           <Scan size={15} />

@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
+import { DATASET_META } from "../simulation/dataset";
 import { STAGE_META } from "../simulation/stageMeta";
 import type { StationId } from "../transit/mapConfig";
 import { useTransit } from "../store";
@@ -86,6 +87,15 @@ const DOT: Record<string, string> = {
 function SheetBody({ id, status, durationMs, onClose }: { id: StationId; status: string; durationMs: number | null; onClose: () => void }) {
   const meta = STAGE_META[id];
   const errorText = useTransit((s) => s.errorText);
+  const attempt = useTransit((s) => s.attempt);
+  const liveMode = useTransit((s) => s.liveMode);
+  const carriages = useTransit((s) => s.carriages);
+  const liveRows = useTransit((s) => s.liveRows);
+  const live = liveMode && liveRows.length > 0;
+  const rowsIn = live ? liveRows.length : DATASET_META.rowsIn;
+  const arrived = live
+    ? carriages.filter((c) => c === "clean" || c === "partial").length
+    : DATASET_META.rowsOut;
   return (
     <div className="p-5">
       <div className="flex items-start justify-between gap-3">
@@ -99,11 +109,15 @@ function SheetBody({ id, status, durationMs, onClose }: { id: StationId; status:
       </div>
       <p className="mt-2 text-sm text-[#3f3a30]">{meta.blurb}</p>
       <p className="font-board mt-2 rounded-lg bg-[#f6f3ea] p-2.5 text-[11px] leading-relaxed">{meta.detail}</p>
-      <div className="mt-3 flex items-center gap-4 text-sm">
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <span className="inline-flex items-center gap-2 font-semibold capitalize">
           <span className="h-2.5 w-2.5 rounded-full" style={{ background: DOT[status] }} aria-hidden /> {status}
         </span>
         <span className="font-board text-xs text-[#6b6455]">{durationMs != null ? `${(durationMs / 1000).toFixed(1)}s dwell` : "no dwell recorded"}</span>
+        <span className="font-board text-xs font-bold text-[#141210]">ATTEMPT {attempt}</span>
+        <span className="font-board text-xs text-[#6b6455]">
+          {rowsIn} in · {arrived} out{live ? " (sampled)" : ""}
+        </span>
       </div>
       <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
         <div className="rounded-lg border-2 border-dashed border-[#141210]/30 p-2.5">

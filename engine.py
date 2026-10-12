@@ -2,6 +2,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
 import hashlib
+import json
 import os
 import re
 import sys
@@ -19,7 +20,7 @@ from pipeline_emit import check_pipeline_path, default_pipeline_path, render_pip
 from pre_clean import format_report, pre_clean, sanitize_export_cells, smart_parse
 from run_summary import write_summary
 from sandbox import run_generated_code
-from schema_builder import build_pandera_schema
+from schema_builder import build_pandera_schema, clean_json_text
 from schema_inference import infer_schema
 from sinks import parse_sink, write_sink
 from validate import redact_execution_error, redact_failure_cases, sanity_checks, validate
@@ -69,6 +70,61 @@ def _input_hash(file_path, rules) -> str:
     except (OSError, TypeError):
         content = hashlib.md5(str(file_path).encode("utf-8")).hexdigest()
     return hashlib.md5(f"{content}:{rules}".encode("utf-8")).hexdigest()
+
+
+def _ground_uniqueness(df, schema_json, pandera_schema, file_path, rules):
+    """Verify every unique:true claim against the FULL frame.
+
+    The schema is inferred from a ~15-row sample, which routinely calls
+    columns unique that aren't (real case: 64 unique emails / 1020 rows).
+    An unsatisfiable unique constraint makes every attempt delete its way
+    into the sanity guard — burned retries that can never pass. Claims the
+    data disproves are relaxed, loudly. Exception: when the RULES explicitly
+    demand uniqueness, the data violates the spec — fail fast with a clear
+    message instead of laundering the constraint away.
+    (Same-class residual, not handled: sampled allowed_values/nullable
+    claims can over-constrain the same way.)
+    Returns (schema_json, pandera_schema). Raises ValueError on conflict.
+    """
+    try:
+        spec = json.loads(clean_json_text(schema_json))
+    except Exception:
+        return schema_json, pandera_schema
+    if not isinstance(spec, dict):
+        return schema_json, pandera_schema
+    bad = {}
+    for col, col_spec in spec.items():
+        if not isinstance(col_spec, dict) or not col_spec.get("unique"):
+            continue
+        if col not in df.columns:
+            continue
+        try:
+            if not df[col].is_unique:
+                bad[col] = f"{df[col].nunique()}/{len(df)} unique"
+        except Exception:
+            continue  # unhashable cells etc. — leave the claim alone
+    if not bad:
+        return schema_json, pandera_schema
+    rules_norm = (rules or "").lower().replace("_", " ")
+    demanded = [c for c in bad
+                if "unique" in rules_norm and c.lower().replace("_", " ") in rules_norm]
+    if demanded:
+        raise ValueError(
+            f"rules demand unique {demanded} but the data disagrees "
+            f"({'; '.join(f'{c}: {bad[c]}' for c in demanded)}) — unsatisfiable, "
+            f"relax the rules or fix the data")
+    for col in bad:
+        spec[col]["unique"] = False
+    new_json = json.dumps(spec, indent=2)
+    try:
+        new_schema = build_pandera_schema(new_json)
+    except ValueError:
+        return schema_json, pandera_schema
+    counts = "; ".join(f"{c}: {bad[c]}" for c in bad)
+    print(f"⚠️ {file_path}: schema claimed unique ({counts}) but full data disagrees — "
+          f"relaxing so rows survive. If uniqueness is a real rule, the DATA violates it.")
+    log_fix(file_path, 0, f"schema unique relaxed (data disagrees): {counts}", "")
+    return new_json, new_schema
 
 
 def _content_fingerprint(source: str, df) -> str | None:
@@ -164,6 +220,19 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
                         "input_hash": input_hash,
                         "pipeline_path": None, "sink": None,
                         "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
+        try:
+            schema_json, pandera_schema = _ground_uniqueness(
+                df, schema_json, pandera_schema, file_path, rules)
+        except ValueError as e:
+            print(f"❌ {file_path}: {e}")
+            log_fix(file_path, 0, str(e), "")
+            usage = _run_usage(file_path)
+            return {"file": file_path, "success": False, "attempts": 0,
+                    "usage": usage, "budget_stopped": False,
+                    "error": str(e),
+                    "input_hash": input_hash,
+                    "pipeline_path": None, "sink": None,
+                    "rows_in": len(df), "rows_out": 0, "rows_dropped": len(df)}
         _fire(on_stage, "schema", "passed")
         cached_code = None if no_cache else get_cached_code(schema_json, rules)
         if cached_code is not None:
@@ -213,11 +282,37 @@ def process_one(file_path, rules, retries, output_path, dry_run=False, quiet=Fal
     last_frame = None  # best-effort partial output on terminal failure
     seen_code = {hashlib.md5(code.encode("utf-8")).hexdigest()}
 
+    _repair_sample_cache = None
+
+    def _head_csv(frame):
+        """Tiny truncated CSV of raw head rows for the fix prompt (display
+        only — never executed). Built lazily so first-try passes pay nothing."""
+        try:
+            out = frame.head(5).copy()
+
+            def _cell(v):
+                try:
+                    if pd.isna(v):
+                        return v
+                except (TypeError, ValueError):
+                    pass
+                s = v if isinstance(v, str) else str(v)
+                return s[:200]
+
+            for col in out.columns:
+                out[col] = out[col].map(_cell)
+            return out.to_csv(index=False)
+        except Exception:
+            return ""
+
     def _repair(current_code, problem):
         """Next code via fix path; guarded — a fix-generation crash ends the run."""
-        nonlocal code, used_cache
+        nonlocal code, used_cache, _repair_sample_cache
         try:
-            code = _next_code(current_code, problem, schema_json, rules, file_path, used_cache)
+            if _repair_sample_cache is None:
+                _repair_sample_cache = _head_csv(df)
+            code = _next_code(current_code, problem, schema_json, rules, file_path,
+                              used_cache, sample_csv=_repair_sample_cache)
         except Exception as e:
             print(f"❌ {file_path}: fix generation failed ({e}) — stopping.")
             log_fix(file_path, attempt, f"fix generation failed: {type(e).__name__}: {e}", current_code)
@@ -427,13 +522,15 @@ def _over_budget(file_path, max_cost_usd) -> bool:
     return spent is not None and spent >= max_cost_usd
 
 
-def _next_code(broken_code, error_info, schema_json, rules, file_path, used_cache):
+def _next_code(broken_code, error_info, schema_json, rules, file_path, used_cache,
+               sample_csv=""):
     """Repair path: a stale cache entry gets ONE fresh generation (not a fix
     of code that was never right for this data); otherwise ask for a fix."""
     if used_cache:
         print("Cached code failed — falling back to fresh generation.")
         return generate_transform_code(schema_json, rules, tag=file_path)
-    return fix_transform_code(broken_code, error_info, schema_json, tag=file_path)
+    return fix_transform_code(broken_code, error_info, schema_json, tag=file_path,
+                              sample_csv=sample_csv)
 
 
 def _run_usage(file_path):

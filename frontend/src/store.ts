@@ -67,8 +67,10 @@ function saveSnapshot(s: TransitState) {
         alerts: s.alerts.slice(-6),
         memNodes: s.memNodes,
         memLinks: s.memLinks,
-        board: s.board,
-        ticketsOut: s.ticketsOut,
+        memMeta: s.memMeta,
+        runStartedAt: s.runStartedAt,
+        runEndedAt: s.runEndedAt,
+        board: s.board,        ticketsOut: s.ticketsOut,
         speed: s.speed,
         viewingVersion: s.viewingVersion,
         latestVersion: s.latestVersion,
@@ -124,6 +126,11 @@ interface TransitState {
   alerts: string[];
   memNodes: MemoryNode[];
   memLinks: MemoryLink[];
+  /** Presentation metadata derived locally at arrival (NOT event data):
+   *  which attempt + wall-clock each memory node boarded with. */
+  memMeta: Record<string, { attempt: number; at: number }>;
+  runStartedAt: number | null;
+  runEndedAt: number | null;
   board: { next: string; status: string };
   ticketsOut: boolean;
   speed: Speed;
@@ -140,7 +147,6 @@ interface TransitState {
   liveMode: boolean;
   rules: string;
   live: { runId: string; base: string; runToken: string | null } | null;
-  apiToken: string;
   codeSources: Record<number, string>;
   liveColumns: string[];
   liveRows: BatchRow[];
@@ -148,7 +154,6 @@ interface TransitState {
   loadSample: () => void;
   loadFile: (f: File) => Promise<void>;
   setRules: (r: string) => void;
-  setApiToken: (t: string) => void;
   setLiveMode: (b: boolean) => void;
   depart: () => void;
   togglePause: () => void;
@@ -227,19 +232,30 @@ export const useTransit = create<TransitState>()((set, get) => {
   const restored = loadSnapshot();
   const restoredRunning = restored?.phase === "running";
   const restoredDone = restored?.phase === "done";
+  // A refresh orphans live runs: the run token is memory-only by design,
+  // so the fresh tab can neither reattach the stream nor cancel it — and
+  // replayAttempt would no-op silently, leaving DEPART disabled forever on
+  // a dead phase. Settle to idle with the file+rules kept instead; if the
+  // server run is genuinely still going, DEPART answers 409 (truthful wait),
+  // otherwise it boards immediately. Scripted restores keep needsReplay
+  // (their replay is local and works).
+  const restoredLiveRunning =
+    !!restoredRunning && (!!restored?.liveMode || !!restored?.live?.runId);
   if (restored?.logs?.length) {
     logSeq = Math.max(...restored.logs.map((l: StoredLog) => l.id), 0);
   }
 
   return {
   file: restored?.file ?? null,
-  fileError: null,
-  phase: restored?.phase ?? "idle",
+  fileError: restoredLiveRunning
+    ? "Live session disconnected on refresh — file and rules kept, press DEPART to run again."
+    : null,
+  phase: restoredLiveRunning ? "idle" : (restored?.phase ?? "idle"),
   attempt: restored?.attempt ?? 1,
   maxAttempt: restored?.maxAttempt ?? 1,
   // A refresh kills GSAP timelines: a restored mid-run can never resume in
   // place — it must replay its attempt. Flag it so play means "re-dispatch".
-  needsReplay: !!restoredRunning,
+  needsReplay: !!restoredRunning && !restoredLiveRunning,
   maxRetries: 5,
   stages: restoredDone ? passedStages() : idleStages(),
   latestVersion: restored?.latestVersion ?? 1,
@@ -256,12 +272,15 @@ export const useTransit = create<TransitState>()((set, get) => {
   alerts: restored?.alerts ?? [],
   memNodes: restored?.memNodes ?? baseMemory().nodes,
   memLinks: restored?.memLinks ?? baseMemory().links,
-  board: restoredRunning
+  memMeta: restored?.memMeta ?? {},
+  runStartedAt: restored?.runStartedAt ?? null,
+  runEndedAt: restored?.runEndedAt ?? null,
+  board: restoredRunning && !restoredLiveRunning
     ? { next: "Intake Central", status: "HELD FOR RE-DISPATCH" }
     : (restored?.board ?? { next: "Intake Central", status: "STANDBY" }),
-  ticketsOut: restored?.ticketsOut ?? false,
+  ticketsOut: restoredLiveRunning ? false : (restored?.ticketsOut ?? false),
   speed: restored?.speed ?? 1,
-  paused: restoredRunning ? true : false,
+  paused: restoredRunning && !restoredLiveRunning ? true : false,
   sound: false,
   follow: false,
   mobile: false,
@@ -276,7 +295,6 @@ export const useTransit = create<TransitState>()((set, get) => {
   // Ownership tokens are memory-only (never persisted): after a refresh,
   // server fetches fail closed with a re-DEPART hint instead of stale auth.
   live: restored?.live ? { runId: restored.live.runId, base: restored.live.base, runToken: null } : null,
-  apiToken: "",
   codeSources: restored?.codeSources ?? {},
   liveColumns: restored?.liveColumns ?? [],
   liveRows: restored?.liveRows ?? [],
@@ -290,7 +308,6 @@ export const useTransit = create<TransitState>()((set, get) => {
   },
 
   setRules: (r) => set({ rules: r }),
-  setApiToken: (t: string) => set({ apiToken: t }),
   setLiveMode: (b) => {
     try {
       localStorage.setItem(LIVE_KEY, b ? "1" : "0");
@@ -361,7 +378,6 @@ export const useTransit = create<TransitState>()((set, get) => {
       }
       e.stop();
       (e as ApiBackend).setPayload(bytes, rules, 3);
-      (e as ApiBackend).setApiToken(get().apiToken);
       (e as ApiBackend).onRunId = (id, token) => {
         set({ live: { runId: id, base: API_BASE, runToken: token || null } });
         saveSnapshot(get());
@@ -395,6 +411,9 @@ export const useTransit = create<TransitState>()((set, get) => {
       alerts: [],
       memNodes: mem.nodes,
       memLinks: mem.links,
+      memMeta: {},
+      runStartedAt: Date.now(),
+      runEndedAt: null,
       board: { next: "Intake Central", status: "BOARDING" },
       ticketsOut: false,
       paused: false,
@@ -480,6 +499,9 @@ export const useTransit = create<TransitState>()((set, get) => {
       alerts: [],
       memNodes: mem.nodes,
       memLinks: mem.links,
+      memMeta: {},
+      runStartedAt: Date.now(),
+      runEndedAt: null,
       board: { next: "Intake Central", status: "STANDBY" },
       ticketsOut: false,
       paused: false,
@@ -570,9 +592,13 @@ export const useTransit = create<TransitState>()((set, get) => {
         const linkKey = (l: MemoryLink) => `${l.source}|${l.target}|${l.label}`;
         set((s) => {
           const known = new Set(s.memLinks.map(linkKey));
+          const fresh = e.nodes.filter((n) => !s.memNodes.some((m) => m.id === n.id));
+          const meta = { ...s.memMeta };
+          for (const n of fresh) meta[n.id] = { attempt: s.attempt, at: Date.now() };
           return {
-            memNodes: [...s.memNodes, ...e.nodes.filter((n) => !s.memNodes.some((m) => m.id === n.id))],
+            memNodes: [...s.memNodes, ...fresh],
             memLinks: [...s.memLinks, ...e.links.filter((l) => !known.has(linkKey(l)))],
+            memMeta: meta,
           };
         });
         break;
@@ -610,6 +636,7 @@ export const useTransit = create<TransitState>()((set, get) => {
           paused: false,
           attempt: e.attempts ?? 3,
           scoreHistory: s.scoreHistory.length ? s.scoreHistory : [s.score],
+          runEndedAt: Date.now(),
         }));
         break;
     }

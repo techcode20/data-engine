@@ -322,11 +322,16 @@ def _drive(run: dict, saved_path: str):
                   "error": f"driver crashed: {type(e).__name__}: {e}"}
     run["result"] = result
     run["finished_at"] = time.time()
-    run["final_code"] = (run["attempts"].get(result.get("attempts", 0), {})
-                         .get("code", ""))
     ok = result.get("success") is True
     cancelled = result.get("cancelled") is True
     run["status"] = "cancelled" if cancelled else ("done" if ok else "failed")
+    # Resolve the Repair Depot badge: the engine only marks repair "passed"
+    # when another attempt starts, so a terminal run would leave it RUNNING
+    # forever — looking stuck while the board already says HELD/ARRIVED.
+    _emit(run, {"type": "stage", "id": "repair",
+                "status": "passed" if ok else "failed"})
+    run["final_code"] = (run["attempts"].get(result.get("attempts", 0), {})
+                         .get("code", ""))
     _emit(run, {"type": "crew", "visible": False})
     _emit(run, {"type": "reroute", "on": False})
     if cancelled:
@@ -375,8 +380,13 @@ async def create_run(request: Request, file: UploadFile = File(...), rules: str 
         bad = _check_docker()
         if bad:
             raise HTTPException(status_code=503, detail=f"docker backend required: {bad}")
-    if _active_run() is not None:
-        raise HTTPException(status_code=409, detail="a live run is already boarding")
+    active = _active_run()
+    if active is not None:
+        age = int(time.time() - active.get("created", time.time()))
+        raise HTTPException(
+            status_code=409,
+            detail=f"a live run is already boarding (started {age}s ago) — "
+                   f"wait for it to arrive")
     name = (file.filename or "upload").lower()
     if not name.endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="gate accepts .csv and .json only")
@@ -448,14 +458,18 @@ def run_events(run_id: str, request: Request):
         pos = resume_from
         yield ": connected\n\n"
         while True:
+            # Decide under the lock, yield outside it: yielding while
+            # holding run["cond"] wedges _emit (and the whole run) whenever
+            # the client stalls or disconnects uncleanly.
             with run["cond"]:
                 pending = [e for e in run["events"] if e["seq"] > pos]
                 if not pending and run["status"] == "running":
                     run["cond"].wait(timeout=15)
                     pending = [e for e in run["events"] if e["seq"] > pos]
-                if not pending and run["status"] == "running":
-                    yield ": ping\n\n"
-                    continue
+                alive = run["status"] == "running"
+            if not pending and alive:
+                yield ": ping\n\n"
+                continue
             for event in pending:
                 pos = event["seq"]
                 yield _sse_line(event)

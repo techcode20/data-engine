@@ -1,5 +1,8 @@
+import { useEffect } from "react";
+import { groupCars } from "../lib/consist";
+import { LINE_STATE_STYLE, segmentState } from "../lib/lines";
 import { mapDragSuppressed } from "../lib/mapGesture";
-import { useTransit } from "../store";
+import { engineRef, useTransit } from "../store";
 import { COLORS, CORNER_R, LINE_WIDTH, STATION_R } from "../tokens";import {
   LINE_COLOR,
   SEGMENTS,
@@ -72,7 +75,9 @@ function Carriage({ x, state, index }: { x: number; state: CarriageState; index:
 
 function Train() {
   const carriages = useTransit((s) => s.carriages);
+  const liveRows = useTransit((s) => s.liveRows);
   const attempt = useTransit((s) => s.attempt);
+  const cars = groupCars(carriages, liveRows);
   return (
     <g id="pf-train" transform="translate(-500 -500)" aria-label={`Dataset train, attempt ${attempt}`}>
       {/* engine */}
@@ -82,8 +87,8 @@ function Train() {
       <text x={1} y={22} textAnchor="middle" fontSize={9} fontWeight={700} fill={COLORS.ink} fontFamily="IBM Plex Mono, monospace">
         PF·{attempt}
       </text>
-      {carriages.map((st, i) => (
-        <Carriage key={i} x={-46 - i * 52} state={st} index={i} />
+      {cars.map((car, i) => (
+        <Carriage key={i} x={-46 - i * 52} state={car.state} index={i} />
       ))}
     </g>
   );
@@ -156,14 +161,16 @@ function StationGlyph({ id }: { id: StationId }) {
           </>
         )}
       </g>
-      <text x={x} y={y - STATION_R - 12} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.ink} fontFamily="'Space Grotesk',sans-serif">
-        {cfg.name}
-      </text>
-      <text x={x} y={y - STATION_R - 28} textAnchor="middle" fontSize={9.5} fontWeight={600} fill="#6b6455" fontFamily="'IBM Plex Mono',monospace" letterSpacing={2}>
-        {cfg.code} · {cfg.platform.toUpperCase()}
-      </text>
-      {status !== "idle" && (
-        <g transform={`translate(${x} ${y + STATION_R + 12})`}>
+        <text x={x} y={y - STATION_R - 12} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.ink} fontFamily="'Space Grotesk',sans-serif" data-map-label={`${id}-name`}>
+          {cfg.name}
+        </text>
+        {id !== "validation" && (
+        <text x={x} y={y - STATION_R - 28} textAnchor="middle" fontSize={11} fontWeight={600} fill="#6b6455" fontFamily="'IBM Plex Mono',monospace" letterSpacing={2} data-map-label={`${id}-platform`}>
+          {mobile ? cfg.code : `${cfg.code} · ${cfg.platform}`}
+        </text>
+        )}
+        {status !== "idle" && (
+          <g transform={`translate(${x} ${y + STATION_R + 12})`} data-map-label={`${id}-status`}>
           <rect x={-34} y={-9} width={68} height={18} rx={9} fill={COLORS.ink} />
           <circle cx={-24} cy={0} r={4} fill={dot === "transparent" ? "#a8a091" : dot} />
           <text x={6} y={3.5} textAnchor="middle" fontSize={9} fontWeight={700} fill="#f6f3ea" fontFamily="'IBM Plex Mono',monospace">
@@ -180,6 +187,63 @@ export function TransitMap() {
   const rerouteOn = useTransit((s) => s.rerouteOn);
   const disruption = useTransit((s) => s.disruption);
   const memNodes = useTransit((s) => s.memNodes);
+  const liveMode = useTransit((s) => s.liveMode);
+  const phase = useTransit((s) => s.phase);
+  const stages = useTransit((s) => s.stages);
+
+  // Live runs have no GSAP timeline: the scripted engine tweens #pf-train
+  // along motion paths (with autoRotate), but ApiBackend only publishes
+  // trainPos. Without this loop the train sits parked offscreen forever.
+  // The loop glides toward the latest station (teleporting on depart/scrub
+  // jumps) and eases the consist onto its heading, so vertical legs read
+  // as a train turning — not a horizontal stamp sliding sideways.
+  useEffect(() => {
+    if (!liveMode || phase === "idle") return;
+    if (typeof requestAnimationFrame !== "function" || typeof document !== "object") return;
+    const reduce =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let raf = 0;
+    let px = 0;
+    let py = 0;
+    let ang = 0;
+    let init = false;
+    const loop = () => {
+      const eng = engineRef();
+      const el = document.getElementById("pf-train");
+      if (eng && el) {
+        const tx = eng.trainPos.x;
+        const ty = eng.trainPos.y;
+        if (!init || reduce) {
+          px = tx;
+          py = ty;
+          init = true;
+        }
+        const dx = tx - px;
+        const dy = ty - py;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 400) {
+          px = tx;
+          py = ty;
+        } else if (dist > 0.5) {
+          const k = reduce ? 1 : 0.12;
+          px += dx * k;
+          py += dy * k;
+          const target = (Math.atan2(dy, dx) * 180) / Math.PI;
+          const arc = ((target - ang + 540) % 360) - 180; // shortest way round
+          ang += reduce ? arc : arc * 0.18;
+        }
+        el.setAttribute(
+          "transform",
+          `translate(${px.toFixed(1)} ${py.toFixed(1)}) rotate(${ang.toFixed(1)})`,
+        );
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [liveMode, phase]);
 
   const pts = (mpts: [number, number][], dpts: [number, number][]) => (mobile ? mpts : dpts);
 
@@ -231,7 +295,13 @@ export function TransitMap() {
         const p = pts(s.mpts, s.pts);
         const isReroute = !!s.reroute;
         const visible = !isReroute || rerouteOn;
-        const color = LINE_COLOR[s.line];
+        // State-driven track colour (idle ink / repair amber / done green /
+        // failing red) with dash cues so state never rides on colour alone.
+        const state = segmentState(s.id, stages, rerouteOn);
+        const style = LINE_STATE_STYLE[state];
+        const color = style.color;
+        const dash =
+          state === "failing" ? "10 6" : state === "repair" ? "2 7" : s.style === "dashed" ? "14 10" : undefined;
         const d = roundedPath(p, CORNER_R);
         const labelPos = pointAlong(p, 0.5);
         return (
@@ -239,20 +309,31 @@ export function TransitMap() {
             {isReroute && !rerouteOn ? (
               <path d={d} fill="none" stroke={color} strokeWidth={LINE_WIDTH} strokeLinecap="round" strokeDasharray="2 14" opacity={0.7} />
             ) : (
-              <path d={d} fill="none" stroke={color} strokeWidth={LINE_WIDTH} strokeLinecap="round" strokeDasharray={s.style === "dashed" ? "14 10" : undefined} />
+              <path
+                d={d}
+                fill="none"
+                stroke={color}
+                strokeWidth={LINE_WIDTH}
+                strokeLinecap="round"
+                strokeDasharray={dash}
+              />
             )}
             {disruption && s.id === "main-b" && (
               <path d={d} fill="none" stroke="url(#hazard)" strokeWidth={LINE_WIDTH + 6} strokeLinecap="round" opacity={0.9} className="hazard-flash" />
             )}
             {s.label && (
               <text
-                x={labelPos[0] + (s.labelDx ?? 0)}
-                y={labelPos[1] + (s.labelDy ?? -16)}
+                data-map-label={`line-${s.id}`}
+                x={labelPos[0] + (mobile ? (s.mLabelDx ?? s.labelDx ?? 0) : (s.labelDx ?? 0))}
+                y={labelPos[1] + (mobile ? (s.mLabelDy ?? s.labelDy ?? -16) : (s.labelDy ?? -16))}
                 textAnchor="middle"
                 fontSize={13}
                 fontWeight={700}
                 fill={COLORS.ink}
                 fontFamily="'Space Grotesk',sans-serif"
+                stroke="#f6f3ea"
+                strokeWidth={3}
+                paintOrder="stroke"
               >
                 {s.label}
               </text>

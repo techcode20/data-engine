@@ -20,8 +20,6 @@ export function GateHero() {
   const liveMode = useTransit((s) => s.liveMode);
   const rules = useTransit((s) => s.rules);
   const setRules = useTransit((s) => s.setRules);
-  const apiToken = useTransit((s) => s.apiToken);
-  const setApiToken = useTransit((s) => s.setApiToken);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -144,18 +142,6 @@ export function GateHero() {
                 onChange={(e) => setRules(e.target.value)}
                 rows={2}
                 placeholder="e.g. id is required and unique. amount must be numeric and non-negative."
-                className="mt-1 w-full rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] p-2.5 text-sm shadow-[3px_3px_0_#141210] focus:outline-none"
-              />
-              <label htmlFor="live-token" className="font-board mt-3 block text-[10px] font-bold tracking-widest text-[#6b6455]">
-                API TOKEN — ONLY IF THE BACKEND ASKS FOR ONE (MEMORY-ONLY, NEVER STORED)
-              </label>
-              <input
-                id="live-token"
-                type="password"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder="paste PF_API_TOKEN · leave empty on localhost"
-                autoComplete="off"
                 className="mt-1 w-full rounded-xl border-[3px] border-[#141210] bg-[#fffdf6] p-2.5 text-sm shadow-[3px_3px_0_#141210] focus:outline-none"
               />
             </div>

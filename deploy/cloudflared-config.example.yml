@@ -1,0 +1,12 @@
+# cloudflared tunnel config — copy to
+# C:\Users\<you>\.cloudflared\config.yml and fill in your tunnel ID.
+# Outbound-only: works behind CGNAT, no open ports on this host.
+# Pair with a Cloudflare Access policy (emails of your few people, OTP)
+# on the hostname below — that login is the only auth visitors ever see.
+tunnel: PASTE_TUNNEL_ID_HERE
+credentials-file: C:\Users\REPLACE_ME\.cloudflared\PASTE_TUNNEL_ID_HERE.json
+
+ingress:
+  - hostname: transit.example.com
+    service: http://127.0.0.1:80
+  - service: http_status:404

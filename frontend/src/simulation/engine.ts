@@ -182,7 +182,7 @@ export class TransitEngine {
     tl.to(target, {
       duration: this.reduced ? 0.01 : duration,
       ease: "power1.inOut",
-      motionPath: { path, align: path, alignOrigin: [0.5, 0.5], start: from, end: to },
+      motionPath: { path, align: path, alignOrigin: [0.5, 0.5], autoRotate: true, start: from, end: to },
       onUpdate: trackPos
         ? () => {
             this.trainPos = {

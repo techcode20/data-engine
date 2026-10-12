@@ -9,6 +9,7 @@ import { GateHero } from "./components/GateHero";
 import { PaperSection } from "./components/PaperSection";
 import { PlatformSheet } from "./components/PlatformSheet";
 import { SrLive, ServiceTicker } from "./components/ServiceTicker";
+import { SummaryStrip } from "./components/SummaryStrip";
 import { TicketMachine } from "./components/TicketMachine";
 import { TransitMap } from "./components/TransitMap";
 import { useTransit } from "./store";
@@ -38,15 +39,32 @@ export default function App() {
         <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
           <section id="livemap" aria-label="Live transit map" className="relative overflow-hidden rounded-2xl border-[3px] border-[#141210] bg-[#fffdf6] shadow-[6px_6px_0_#141210]">
             <DepartureBoard />
-            <div className="pt-14">
-              <TransitMap />
+            <div className="px-4 pb-1 pt-24 sm:pt-20">
+              <SummaryStrip />
             </div>
-            <p className="border-t-2 border-dashed border-[#141210]/20 px-4 py-2 font-board text-[11px] text-[#6b6455]">
-              Drag to pan · Ctrl-scroll or pinch to zoom · tap stations &amp; carriages · arrow keys work when the map is focused
-            </p>
+            <TransitMap />
+            <div className="border-t-2 border-dashed border-[#141210]/20 px-4 py-2">
+              <p className="font-board text-[11px] text-[#6b6455]">
+                Drag to pan · Ctrl-scroll or pinch to zoom · tap stations &amp; carriages · arrow keys work when the map is focused
+              </p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1" aria-label="Track state legend">
+                {[
+                  { label: "Idle", style: { borderTop: "4px solid #141210" } },
+                  { label: "Repair active", style: { borderTop: "4px dotted #f59e0b" } },
+                  { label: "Completed", style: { borderTop: "4px solid #16a34a" } },
+                  { label: "Failing", style: { borderTop: "4px dashed #e3342f" } },
+                ].map((s) => (
+                  <span key={s.label} className="inline-flex items-center gap-1.5 font-board text-[10px] font-bold tracking-widest text-[#57534e]">
+                    <span aria-hidden className="inline-block w-7" style={s.style} />
+                    {s.label.toUpperCase()}
+                  </span>
+                ))}
+              </div>
+            </div>
           </section>
 
           <PaperSection
+            id="timetable"
             kicker="Code Junction · printed timetable"
             title="Timetable poster & work orders"
             blurb="The exact Python the model posted, versioned per attempt — with the red/green work-order diff the repair crew fitted."

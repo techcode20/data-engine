@@ -158,15 +158,15 @@ PF_API_TOKEN=<long-random> SANDBOX_BACKEND=docker SANDBOX_DOCKER_IMAGE=data-engi
 
 What the token buys: every `POST /runs` needs `Authorization: Bearer`, each
 run returns a secret run-token required for stream/snapshot/download/cancel
-(the browser pastes the shared token once at the gate — memory-only, never
-stored; run tokens ride the download URLs because anchors can't set
-headers, so keep access logs away from untrusted eyes). Docker becomes
-MANDATORY (creation 503s while docker is misconfigured — no silent
-downgrade), and finished runs are swept — frames, `pf_run_*` tmpdirs,
+(visitors never see a token field — Cloudflare Access is the login and Caddy
+injects `PF_API_TOKEN` server-side; run tokens ride the download URLs because
+anchors can't set headers, so keep access logs away from untrusted eyes).
+Docker becomes MANDATORY (creation 503s while docker is misconfigured — no
+silent downgrade), and finished runs are swept — frames, `pf_run_*` tmpdirs,
 snapshots — after `ARTIFACT_TTL_S` (default 600s; floor 60s). Row samples
 stay served by design (the magnifier needs them), so treat run URLs as
 capabilities and rotate the token if one leaks. Still no per-user quotas —
-one shared token means shared Gemini spend.
+one shared token means shared Gemini spend. Full topology in `deploy/`.
 
 Cut a release after merging a feature:
 
