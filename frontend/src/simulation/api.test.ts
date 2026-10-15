@@ -80,8 +80,23 @@ test("start posts the upload and streams server events", async () => {
   es.send({ type: "score", value: 62 });
   expect(events).toContainEqual({ type: "stage", id: "sandbox", status: "running" });
   expect(events).toContainEqual({ type: "score", value: 62 });
-  // Follow-camera rides to the running station.
-  expect(backend.trainPos).toEqual({ x: 750, y: 540 });
+  // The consist glides to the running station instead of snapping to it.
+  expect(backend.trainPos).toEqual({ x: 90, y: 540 });
+  for (let i = 0; i < 200; i++) backend.update(16);
+  expect(backend.trainPos.x).toBeCloseTo(750, 0);
+  expect(backend.trainPos.y).toBeCloseTo(540, 0);
+});
+
+test("retry boards at Intake Central, not where the last run parked", async () => {  mockFetchOnce(() => okRun());
+  const backend = new ApiBackend();
+  collect(backend);
+  backend.setPayload(new File(["id\n1\n"], "t.csv", { type: "text/csv" }), "id is required");
+  backend.start();
+  await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+  // Previous run parked at Repair Depot; DEPART again snaps back to start.
+  backend.trainPos = { x: 760, y: 450 };
+  backend.start();
+  expect(backend.trainPos).toEqual({ x: 90, y: 540 });
 });
 
 test("pause buffers and resume flushes in order", async () => {
@@ -209,4 +224,70 @@ test("401 from a token-guarded backend surfaces a token hint", async () => {
   backend.start();
   await vi.waitFor(() => expect(events.some((e) => e.type === "done")).toBe(true));
   expect(events.find((e) => e.type === "error")?.text).toMatch(/token/);
+});
+
+async function startedBackend() {
+  mockFetchOnce(() => okRun());
+  const backend = new ApiBackend();
+  collect(backend);
+  backend.setPayload(new File(["id\n1\n"], "t.csv", { type: "text/csv" }), "r");
+  backend.start();
+  await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+  return { backend, es: MockEventSource.instances[0] };
+}
+
+test("glide eases station to station with a dwell beat", async () => {
+  const { backend, es } = await startedBackend();
+  // Burst arrival (intake/schema/code fire together): no snapping, the
+  // consist rides intake → schema → code with visible travel time.
+  es.send({ type: "stage", id: "intake", status: "running" });
+  es.send({ type: "stage", id: "schema", status: "running" });
+  // Mid-leg the consist is between stations, upright on the main line.
+  for (let i = 0; i < 30; i++) backend.update(16);
+  expect(backend.trainPos.x).toBeGreaterThan(90);
+  expect(backend.trainPos.x).toBeLessThan(310);
+  expect(backend.trainPos.y).toBeCloseTo(540, 0);
+  // Settles at Schema Square, then holds the dwell beat.
+  for (let i = 0; i < 200; i++) backend.update(16);
+  expect(backend.trainPos.x).toBeCloseTo(310, 0);
+  const held = { ...backend.trainPos };
+  for (let i = 0; i < 10; i++) backend.update(16);
+  expect(backend.trainPos).toEqual(held);
+});
+
+test("bursts queue station visits in order, none skipped", async () => {
+  const { backend, es } = await startedBackend();
+  es.send({ type: "stage", id: "schema", status: "running" });
+  for (let i = 0; i < 20; i++) backend.update(16);
+  const mid = { ...backend.trainPos };
+  expect(mid.x).toBeGreaterThan(90);
+  // Code fires mid-leg: the glide finishes schema first, then rides code —
+  // continuity, no jump to the latest.
+  es.send({ type: "stage", id: "code", status: "running" });
+  backend.update(16);
+  expect(Math.abs(backend.trainPos.x - mid.x)).toBeLessThan(20);
+  const trail: number[] = [];
+  for (let i = 0; i < 300; i++) {
+    backend.update(16);
+    trail.push(backend.trainPos.x);
+  }
+  expect(backend.trainPos.x).toBeCloseTo(530, 0);
+  const schemaIdx = trail.findIndex((x) => Math.abs(x - 310) < 5);
+  const codeIdx = trail.findIndex((x) => Math.abs(x - 530) < 5);
+  expect(schemaIdx).toBeGreaterThanOrEqual(0);
+  expect(codeIdx).toBeGreaterThan(schemaIdx);
+});
+
+test("depart-scale jumps teleport instead of riding across the map", async () => {
+  const { backend, es } = await startedBackend();
+  backend.trainPos = { x: 970, y: 160 }; // stranded far away (scrub case)
+  es.send({ type: "stage", id: "intake", status: "running" });
+  expect(backend.trainPos).toEqual({ x: 90, y: 540 });
+});
+
+test("reduced motion snaps between stations", async () => {
+  const { backend, es } = await startedBackend();
+  backend.setReducedMotion(true);
+  es.send({ type: "stage", id: "sandbox", status: "running" });
+  expect(backend.trainPos).toEqual({ x: 750, y: 540 });
 });

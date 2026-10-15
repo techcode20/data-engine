@@ -9,7 +9,6 @@ import { GateHero } from "./components/GateHero";
 import { PaperSection } from "./components/PaperSection";
 import { PlatformSheet } from "./components/PlatformSheet";
 import { SrLive, ServiceTicker } from "./components/ServiceTicker";
-import { SummaryStrip } from "./components/SummaryStrip";
 import { TicketMachine } from "./components/TicketMachine";
 import { TransitMap } from "./components/TransitMap";
 import { useTransit } from "./store";
@@ -39,10 +38,9 @@ export default function App() {
         <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
           <section id="livemap" aria-label="Live transit map" className="relative overflow-hidden rounded-2xl border-[3px] border-[#141210] bg-[#fffdf6] shadow-[6px_6px_0_#141210]">
             <DepartureBoard />
-            <div className="px-4 pb-1 pt-24 sm:pt-20">
-              <SummaryStrip />
+            <div className="pt-14">
+              <TransitMap />
             </div>
-            <TransitMap />
             <div className="border-t-2 border-dashed border-[#141210]/20 px-4 py-2">
               <p className="font-board text-[11px] text-[#6b6455]">
                 Drag to pan · Ctrl-scroll or pinch to zoom · tap stations &amp; carriages · arrow keys work when the map is focused

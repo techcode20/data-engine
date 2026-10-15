@@ -194,50 +194,22 @@ export function TransitMap() {
   // Live runs have no GSAP timeline: the scripted engine tweens #pf-train
   // along motion paths (with autoRotate), but ApiBackend only publishes
   // trainPos. Without this loop the train sits parked offscreen forever.
-  // The loop glides toward the latest station (teleporting on depart/scrub
-  // jumps) and eases the consist onto its heading, so vertical legs read
-  // as a train turning — not a horizontal stamp sliding sideways.
+  // The loop advances the backend's eased glide clock and pins the node
+  // upright every frame: the consist is a labelled schematic assembly and
+  // must never rotate (rotating it turns every westbound leg upside down).
   useEffect(() => {
     if (!liveMode || phase === "idle") return;
     if (typeof requestAnimationFrame !== "function" || typeof document !== "object") return;
-    const reduce =
-      typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let raf = 0;
-    let px = 0;
-    let py = 0;
-    let ang = 0;
-    let init = false;
-    const loop = () => {
+    let last = 0;
+    const loop = (t: number) => {
       const eng = engineRef();
       const el = document.getElementById("pf-train");
-      if (eng && el) {
-        const tx = eng.trainPos.x;
-        const ty = eng.trainPos.y;
-        if (!init || reduce) {
-          px = tx;
-          py = ty;
-          init = true;
-        }
-        const dx = tx - px;
-        const dy = ty - py;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 400) {
-          px = tx;
-          py = ty;
-        } else if (dist > 0.5) {
-          const k = reduce ? 1 : 0.12;
-          px += dx * k;
-          py += dy * k;
-          const target = (Math.atan2(dy, dx) * 180) / Math.PI;
-          const arc = ((target - ang + 540) % 360) - 180; // shortest way round
-          ang += reduce ? arc : arc * 0.18;
-        }
-        el.setAttribute(
-          "transform",
-          `translate(${px.toFixed(1)} ${py.toFixed(1)}) rotate(${ang.toFixed(1)})`,
-        );
+      if (eng && el && "update" in eng) {
+        (eng as unknown as { update: (dt: number) => void }).update(last ? Math.min(t - last, 100) : 16);
+        last = t;
+        const pos = eng.trainPos;
+        el.setAttribute("transform", `translate(${pos.x.toFixed(1)} ${pos.y.toFixed(1)})`);
       }
       raf = requestAnimationFrame(loop);
     };

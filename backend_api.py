@@ -14,7 +14,7 @@ Endpoints (all local-only; bind 127.0.0.1):
     GET  /runs/{id}/cleaned.csv validated output download
     GET  /runs/{id}/pipeline.py standalone clean() download
     POST /runs/{id}/cancel      cooperative cancel (takes effect between steps)
-    GET  /health                {ok, version}
+    GET  /health                {ok, version, parquet}
 
 Single-flight: one live run at a time; a second POST while one runs → 409.
 
@@ -196,30 +196,39 @@ def _row_key(values: list) -> tuple:
 def _build_rows(raw: pd.DataFrame, cleaned) -> tuple[list, list]:
     """Sample ≤8 raw rows with kept/dropped fates (exact-match against the
     cleaned frame) + carriage states. Best-effort and documented as such:
-    without row identity, content matching is the honest approximation."""
+    without row identity, content matching is the honest approximation.
+    Rows that were never evaluated (no cleaned frame — the attempt died in
+    the sandbox) report dirty/orange, never rejected: grey means the
+    pipeline looked at the row and dropped it, not that code crashed."""
     columns = [str(c) for c in raw.columns]
     kept = set()
-    if isinstance(cleaned, pd.DataFrame):
+    evaluated = isinstance(cleaned, pd.DataFrame)
+    if evaluated:
         for _, r in cleaned.iterrows():
             kept.add(_row_key([_cell(r[c]) for c in cleaned.columns]))
     rows = []
     states = []
     for _, r in raw.head(MAX_SAMPLE_ROWS).iterrows():
         values = [_cell(r[c]) for c in raw.columns]
-        is_kept = isinstance(cleaned, pd.DataFrame) and _row_key(values) in kept
+        is_kept = evaluated and _row_key(values) in kept
         match = None
         if is_kept:
             for _, cr in cleaned.iterrows():
                 if _row_key([_cell(cr[c]) for c in cleaned.columns]) == _row_key(values):
                     match = [_cell(cr[c]) for c in cleaned.columns]
                     break
-        rows.append({
-            "values": values,
-            "cleaned": match,
-            "fate": "kept" if is_kept else "dropped",
-            "reason": "survived validation" if is_kept else "removed during cleaning",
-        })
-        states.append("clean" if is_kept else "rejected")
+        if not evaluated:
+            # The attempt died before producing a frame: the row was never
+            # judged, so it must not wear rejected-grey. Dirty/orange keeps
+            # the theme and tells the truth (fate stays in the kept/dropped
+            # vocabulary the frontend renders).
+            fate, reason, state = "dropped", "not evaluated — attempt died before validation", "dirty"
+        else:
+            fate = "kept" if is_kept else "dropped"
+            reason = "survived validation" if is_kept else "removed during cleaning"
+            state = "clean" if is_kept else "rejected"
+        rows.append({"values": values, "cleaned": match, "fate": fate, "reason": reason})
+        states.append(state)
     return columns, rows, states
 
 
@@ -363,7 +372,10 @@ def _active_run():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": _VERSION}
+    # A dead parquet transport fails EVERY attempt with a confusing
+    # sandbox error three steps later — surface it here instead.
+    from sandbox import _parquet_available
+    return {"ok": True, "version": _VERSION, "parquet": _parquet_available()}
 
 
 @app.post("/runs", status_code=202)
@@ -476,7 +488,18 @@ def run_events(run_id: str, request: Request):
                 if event.get("type") == "done":
                     return
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            # Proxies (Cloudflare edge, Caddy, nginx) must not buffer this
+            # stream: buffered SSE arrives as one end-of-run burst, and the
+            # map then fast-forwards start→end instead of riding along.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/runs/{run_id}")

@@ -40,6 +40,8 @@ def _post_run(content=b"id,name\n1,Alice\n2,Bob\n", name="t.csv",
 def _stream_events(run_id):
     resp = client.get(f"/runs/{run_id}/events")
     assert resp.status_code == 200
+    assert resp.headers.get("x-accel-buffering") == "no"
+    assert "no-transform" in resp.headers.get("cache-control", "")
     events = []
     for line in resp.text.splitlines():
         if line.startswith("data: "):

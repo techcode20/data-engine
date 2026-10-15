@@ -7,7 +7,7 @@
 # mandatory in token mode), PF_API_TOKEN in the environment, the built
 # site at ../frontend/dist (npm run build), uvicorn on :8000.
 
-{$SITE_HOST} {
+:8080 {
 	# API: strip /api, forward, inject the shared token.
 	handle /api/* {
 		uri strip_prefix /api
@@ -15,12 +15,15 @@
 			header_up Authorization "Bearer {$PF_API_TOKEN}"
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
+			# Never buffer the SSE event stream: buffered events arrive as
+			# one end-of-run burst and the map fast-forwards start→end.
+			flush_interval -1
 		}
 	}
 
 	# Website: static dist build, SPA fallback for the single route.
 	handle {
-		root * ../frontend/dist
+		root * C:/Users/lenovo/data-engine/frontend/dist
 		file_server
 		try_files {path} /index.html
 	}

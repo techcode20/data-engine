@@ -50,7 +50,9 @@ export class ApiBackend {
   setMobile(m: boolean) {
     this.mobile = m;
   }
-  setReducedMotion(_r: boolean) {}
+  setReducedMotion(r: boolean) {
+    this.reduced = r;
+  }
   setChaosStall(_on: boolean) {}
   setTestTimeScale(_x: number | null) {}
   setSpeed(_s: Speed) {}
@@ -59,13 +61,88 @@ export class ApiBackend {
     if (this.dead) return;
     if (isStageEvent(e) && e.status === "running") {
       const pos = (this.mobile ? STATION_POS_MOBILE : STATION_POS).get(e.id);
-      if (pos) this.trainPos = { ...pos };
+      if (pos) this.queueRide({ ...pos });
     }
     if (this.paused) {
       this.buffer.push(e);
       return;
     }
     this.emit(e);
+  }
+
+  /** Eased glide state: the consist rides toward each running station in
+   *  order instead of snapping to it. Bursts (intake/schema/code fire
+   *  together) queue as station visits with a dwell beat each — no jumping,
+   *  no skipping. Teleports happen only on depart-scale jumps (scrub
+   *  replays). The node itself is never rotated — a labelled schematic
+   *  assembly must stay upright in all directions. */
+  private pending: Array<{ x: number; y: number }> = [];
+  private glideFrom = { x: 90, y: 540 };
+  private glideTarget: { x: number; y: number } | null = null;
+  private glideT = 1;
+  private glideDur = 1;
+  private dwellLeft = 0;
+  private reduced = false;
+
+  private queueRide(pos: { x: number; y: number }) {
+    if (this.reduced) {
+      this.trainPos = { ...pos };
+      this.pending = [];
+      this.glideTarget = null;
+      this.glideT = 1;
+      this.dwellLeft = 0;
+      return;
+    }
+    const tail = this.pending[this.pending.length - 1] ?? this.glideTarget ?? this.trainPos;
+    if (tail.x === pos.x && tail.y === pos.y) return;
+    this.pending.push({ ...pos });
+    this.startNext();
+  }
+
+  private startNext() {
+    if (this.glideTarget || this.dwellLeft > 0) return;
+    const next = this.pending.shift();
+    if (!next) return;
+    const dist = Math.hypot(next.x - this.trainPos.x, next.y - this.trainPos.y);
+    if (dist < 2) {
+      this.startNext();
+      return;
+    }
+    if (dist > 800) {
+      // Scrub-scale jump (e.g. Archive back to Intake): place, don't ride.
+      this.trainPos = { ...next };
+      this.startNext();
+      return;
+    }
+    this.glideFrom = { ...this.trainPos };
+    this.glideTarget = next;
+    this.glideT = 0;
+    // ~220 map units per second (demo leg pace), clamped per leg.
+    this.glideDur = Math.min(1500, Math.max(300, dist / 0.22));
+  }
+
+  /** Advance the glide clock. Called every animation frame by the map loop
+   *  with elapsed milliseconds; pure motion state, no DOM. */
+  update(dtMs: number) {
+    if (this.dwellLeft > 0) {
+      this.dwellLeft -= Math.min(dtMs, this.dwellLeft);
+      if (this.dwellLeft <= 0) this.startNext();
+      return;
+    }
+    if (!this.glideTarget || this.glideT >= 1) {
+      this.startNext();
+      return;
+    }
+    this.glideT = Math.min(1, this.glideT + dtMs / this.glideDur);
+    const t = this.glideT * this.glideT * (3 - 2 * this.glideT); // smoothstep
+    this.trainPos = {
+      x: this.glideFrom.x + (this.glideTarget.x - this.glideFrom.x) * t,
+      y: this.glideFrom.y + (this.glideTarget.y - this.glideFrom.y) * t,
+    };
+    if (this.glideT >= 1) {
+      this.glideTarget = null;
+      this.dwellLeft = 300;
+    }
   }
 
   start() {
@@ -77,6 +154,14 @@ export class ApiBackend {
     this.dead = false;
     this.buffer = [];
     this.paused = false;
+    // A retry must board at the start of the line: the position otherwise
+    // persists from the previous run and the consist sits stranded (e.g. at
+    // Repair Depot) while the board already says BOARDING.
+    this.trainPos = { ...(this.mobile ? STATION_POS_MOBILE : STATION_POS).get("intake")! };
+    this.pending = [];
+    this.glideTarget = null;
+    this.glideT = 1;
+    this.dwellLeft = 0;
     if (!this.payload) {
       this.emit({ type: "error", text: "live run needs an uploaded file" });
       this.emit({ type: "done", attempts: 0, status: "failed" });
